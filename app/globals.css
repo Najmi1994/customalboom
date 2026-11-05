@@ -1,0 +1,11 @@
+@import '../src/editor/editor.css';
+
+.cut-gap-inline{height:30px;display:flex;align-items:center;border:1px solid var(--line);border-radius:5px;background:var(--input);overflow:hidden;margin-left:2px}
+.cut-gap-inline:focus-within{outline:2px solid #7b9e86;outline-offset:2px}
+.cut-gap-inline input{width:48px;height:28px;padding:4px 3px 4px 7px;border:0;border-radius:0;background:transparent;font-size:10px;text-align:right;outline:0}
+.cut-gap-inline input::-webkit-inner-spin-button{display:none}
+.cut-gap-inline span{padding:0 7px 0 3px;color:var(--muted);font-size:9px;line-height:28px}
+.half-cut-button{position:relative}
+.half-cut-button small{position:absolute;right:2px;bottom:1px;min-width:11px;border-radius:6px;background:var(--panel);font-size:8px;line-height:11px;color:var(--accent)}
+.left-panel,.photos-panel,.pages-panel{user-select:none;-webkit-user-select:none}
+.left-panel input,.left-panel textarea,.photos-panel input,.photos-panel textarea,.pages-panel input,.pages-panel textarea{user-select:text;-webkit-user-select:text}

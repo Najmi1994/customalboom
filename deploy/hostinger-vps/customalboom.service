@@ -1,0 +1,21 @@
+[Unit]
+Description=CustomAlboom Next.js server
+After=network.target
+
+[Service]
+Type=simple
+User=customalboom
+Group=customalboom
+WorkingDirectory=/var/www/customalboom
+EnvironmentFile=/etc/customalboom/customalboom.env
+ExecStart=/usr/bin/node node_modules/next/dist/bin/next start --hostname 127.0.0.1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/customalboom
+
+[Install]
+WantedBy=multi-user.target
