@@ -1,10 +1,12 @@
 import { useCallback } from 'react';
-import { AlbumElement, FrameElement, Page, makeFrame, makePage, makeText, pageWidth, photoUsage, uid } from '../domain/model';
+import { AlbumElement, FrameElement, Page, makeFrame, makePage, makeText, pageWidth, photoUsage, setProjectFramesLocked, uid } from '../domain/model';
 import { SafeRegion, bounds, clampMove, coverPhoto, dominantRegionForBox, fillRectangleToSide, flipSpreadSide, insidePage, pageSideRegions, resizeElement, safeRegions, validPage } from '../domain/geometry';
 import { PhotoLibrary } from '../io/photos';
 import { useHistory } from './useHistory';
 import { cutPath } from '../domain/cutLinks';
 import { unionSelectedFrames } from '../domain/union';
+import { matchAutoFillPhotos } from '../domain/autoFill';
+import { cycleFramePhotos } from '../domain/photoCycle';
 
 export function useEditorActions(history: ReturnType<typeof useHistory>, page: Page, selected: string[], setSelected: (s: string[]) => void, library: PhotoLibrary, notify: (s: string) => void) {
   const { apply, current } = history;
@@ -14,6 +16,7 @@ export function useEditorActions(history: ReturnType<typeof useHistory>, page: P
   function updatePageSettings(patch: Partial<Page>) { const next = { ...page, ...patch }; if (Object.hasOwn(patch, "backgroundPhoto")) next.backgroundClip = undefined; if (!validPage(next)) return notify(patch.centerPaddingMode ? 'Every frame and text object must fit entirely inside the left or right safe region.' : 'This size or padding would put objects outside the safe area. Adjust the layout first.'); if (patch.baseWidth || patch.height) { const photo = next.backgroundPhoto && library.get(next.backgroundPhoto.assetId); if (photo) { next.backgroundPhoto = coverPhoto(photo.ref.id, photo.ref.width, photo.ref.height, pageWidth(next), next.height); next.backgroundClip = undefined; } } updatePage(() => next); }
   function updateElement(patch: Partial<AlbumElement>) {
     const element = selectedElements[0]; if (!element) return;
+    if (element.type === 'frame' && element.locked && (patch.width !== undefined || patch.height !== undefined)) return notify('Unlock this frame before resizing it.');
     let changed = { ...element, ...patch } as AlbumElement;
     if (patch.width || patch.height) { let width = patch.width ?? element.width, height = patch.height ?? element.height; if (element.type === 'frame' && element.geometry.base.kind === 'ellipse') { if (patch.width) height = element.height * width / element.width; else width = element.width * height / element.height; } const source = element.type === 'frame' && element.photo ? library.get(element.photo.assetId)?.ref : undefined; changed = resizeElement(element, width, height, source); }
     if (!insidePage(changed, page)) return notify('That change would cross the page padding.');
@@ -24,7 +27,7 @@ export function useEditorActions(history: ReturnType<typeof useHistory>, page: P
     if (Math.min(w, h) < 20) return notify('Reduce the padding to make room for a frame.');
     const size = Math.min(w * .42, h * .56), width = kind === 'ellipse' ? size : Math.min(w * .45, h * .72), height = kind === 'ellipse' ? size : Math.min(h * .5, width * .75);
     const x = region.x + (w - width) / 2, y = region.y + (h - height) / 2;
-    let e: AlbumElement = kind === 'text' ? { ...makeText(x, y, width), height: Math.min(90, h), fontSize: Math.min(28, h / 4) } : makeFrame(kind, x, y, width, height);
+    let e: AlbumElement = kind === 'text' ? { ...makeText(x, y, width), height: Math.min(90, h), fontSize: Math.min(28, h / 4) } : { ...makeFrame(kind, x, y, width, height), locked: current.current.framesLocked };
     e = clampMove(e, page); setElements([...page.elements, e]); setSelected([e.id]);
   }
   function deleteElements() {
@@ -61,6 +64,7 @@ export function useEditorActions(history: ReturnType<typeof useHistory>, page: P
   }
   function align(kind: string) {
     if (!selectedElements.length) return;
+    if (selectedElements.some(element => element.type === 'frame' && element.locked)) return notify('Unlock the selected frame before moving or aligning it.');
     const units = selectionUnits(selectedElements), boxes = units.map(unitBounds);
     if (kind.startsWith('distribute') && units.length < 3) return notify('Select at least three objects or groups to distribute them.');
     const target = units.length === 1 ? dominantRegionForBox(boxes[0], safeRegions(page), page.baseWidth) : unionBounds(boxes);
@@ -75,6 +79,7 @@ export function useEditorActions(history: ReturnType<typeof useHistory>, page: P
   }
   function shortcutAlign(kind: 'page' | 'middle' | 'leftCenter' | 'rightCenter') {
     if (!selectedElements.length) return;
+    if (selectedElements.some(element => element.type === 'frame' && element.locked)) return notify('Unlock the selected frame before moving or aligning it.');
     const horizontal = kind !== 'middle', vertical = kind === 'page' || kind === 'middle';
     const sides = pageSideRegions(page), full = safeRegions(page)[0];
     const changes = selectionUnits(selectedElements).flatMap(unit => { const b = unitBounds(unit), box = kind === 'leftCenter' ? sides[0] : kind === 'rightCenter' ? sides[sides.length - 1] : kind === 'page' && page.mode === 'spread' ? dominantRegionForBox(b, sides, page.baseWidth) : full, dx = horizontal ? (box.x + box.right - b.x - b.right) / 2 : 0, dy = vertical ? (box.y + box.bottom - b.y - b.bottom) / 2 : 0; return translateUnit(unit, dx, dy); });
@@ -84,6 +89,7 @@ export function useEditorActions(history: ReturnType<typeof useHistory>, page: P
     if (selectedElements.length !== 1) return notify('Select one rectangle frame to fill its page side.');
     const element = selectedElements[0];
     if (element.type !== 'frame' || element.geometry.base.kind !== 'rect') return notify('Shortcut E is only available for rectangle frames.');
+    if (element.locked) return notify('Unlock this frame before resizing or repositioning it.');
     const filled = fillRectangleToSide(element, page);
     if (!filled) return notify('Shortcut E is not available for cut frame pieces.');
     setElements(page.elements.map(item => item.id === filled.id ? filled : item));
@@ -119,6 +125,12 @@ export function useEditorActions(history: ReturnType<typeof useHistory>, page: P
     if (photoRemoved) notify('Frames were duplicated without photos because duplicate photos are disabled.');
   }
   function layer(direction: number) { const elements = [...page.elements]; const indices = elements.map((e, i) => selected.includes(e.id) ? i : -1).filter(i => i >= 0); if (direction > 0) indices.reverse(); for (const i of indices) { const next = i + direction; if (next >= 0 && next < elements.length && !selected.includes(elements[next].id)) [elements[i], elements[next]] = [elements[next], elements[i]]; } setElements(elements); }
+  function toggleFrameLock() {
+    const locked = !current.current.framesLocked;
+    const count = current.current.pages.reduce((total, item) => total + item.elements.filter(element => element.type === 'frame').length, 0);
+    apply(project => setProjectFramesLocked(project, locked));
+    notify(count ? `${count} frame${count === 1 ? '' : 's'} ${locked ? 'locked' : 'unlocked'} across the album.` : locked ? 'Frame lock enabled. New frames will be locked.' : 'Frame lock disabled. New frames can be moved.');
+  }
   function assignPhoto(assetId: string, frameId?: string, background = false) {
     const local = library.get(assetId); if (!local) return notify('Please reopen the folder containing this photo.');
     const target = page.elements.find(e => e.id === frameId), same = background ? page.backgroundPhoto?.assetId === assetId : target?.type === 'frame' && target.photo?.assetId === assetId;
@@ -134,6 +146,16 @@ export function useEditorActions(history: ReturnType<typeof useHistory>, page: P
     const ids = new Set(frames.map(frame => frame.id));
     setElements(page.elements.map(element => element.type === 'frame' && ids.has(element.id) ? { ...element, photo: undefined } : element));
   }
+  function cycleSelectedPhotos() {
+    if (selectedElements.length < 2 || selectedElements.some(element => element.type !== 'frame')) return notify('Select at least two frames only, then press Q to swap their photos.');
+    const frames = selectedElements as FrameElement[];
+    if (frames.every(frame => !frame.photo)) return notify('The selected frames do not contain any photos to move.');
+    try {
+      const assets = new Map(current.current.assets.map(asset => [asset.id, asset])), { updates } = cycleFramePhotos(frames, assets);
+      setElements(page.elements.map(element => updates.get(element.id) ?? element));
+      notify(frames.length === 2 ? 'Photos swapped between 2 frames.' : `Photos cycled through ${frames.length} frames.`);
+    } catch (error) { notify(error instanceof Error ? error.message : 'The selected photos could not be moved.'); }
+  }
   function autoFill(selectedPhotoIds: string[] = [], eligiblePhotoIds?: readonly string[]) {
     const frames = page.elements.filter((e): e is FrameElement => e.type === 'frame' && !e.photo).sort((a, b) => a.y - b.y || a.x - b.x), used = photoUsage(current.current);
     const selectedMode = selectedPhotoIds.length > 0;
@@ -145,8 +167,9 @@ export function useEditorActions(history: ReturnType<typeof useHistory>, page: P
     if (!available.length) return notify(selectedMode ? 'None of the selected photos are available. Enable “Allow duplicate photo” if they are already used.' : 'No unused photos are available.');
     const updates = new Map<string, FrameElement>();
     const assigned = new Map<string, typeof available[number]>();
-    frames.forEach((frame, index) => {
-      const photo = available[selectedMode ? index : current.current.allowDuplicates ? index % available.length : index];
+    const matches = matchAutoFillPhotos(frames, available.map(photo => photo.ref), !selectedMode && current.current.allowDuplicates);
+    frames.forEach(frame => {
+      const match = matches.get(frame.id), photo = match && library.get(match.id);
       if (photo) { updates.set(frame.id, { ...frame, photo: coverPhoto(photo.ref.id, photo.ref.width, photo.ref.height, frame.width, frame.height) }); assigned.set(photo.ref.id, photo); }
     });
     history.mergeAssets([...assigned.values()].map(photo => photo.ref));
@@ -186,7 +209,7 @@ export function useEditorActions(history: ReturnType<typeof useHistory>, page: P
   }
   function movePage(id: string, direction: number) { apply(doc => { const pages = [...doc.pages], index = pages.findIndex(p => p.id === id), target = Math.max(0, Math.min(pages.length - 1, index + direction)); pages.splice(target, 0, ...pages.splice(index, 1)); return { ...doc, pages }; }); }
   function reorderPage(id: string, target: number) { apply(doc => { const pages = [...doc.pages], index = pages.findIndex(p => p.id === id), destination = Math.max(0, Math.min(pages.length - 1, target)); if (index < 0 || index === destination) return doc; const [moved] = pages.splice(index, 1); pages.splice(destination, 0, moved); return { ...doc, pages }; }); }
-  return { selectedElements, updatePage, setElements, updatePageSettings, updateElement, addElement, deleteElements, toggleGroup: groupFrames, ungroupFrames, unionFrames, align, shortcutAlign, fillRectangleSide, flip, duplicatePosition, layer, assignPhoto, removePhotos, autoFill, addPage, duplicatePage, flipSide, movePage, reorderPage };
+  return { selectedElements, updatePage, setElements, updatePageSettings, updateElement, addElement, deleteElements, toggleGroup: groupFrames, ungroupFrames, unionFrames, align, shortcutAlign, fillRectangleSide, flip, duplicatePosition, layer, toggleFrameLock, assignPhoto, removePhotos, cycleSelectedPhotos, autoFill, addPage, duplicatePage, flipSide, movePage, reorderPage };
 }
 
 function selectionUnits(elements: AlbumElement[]) { const units = new Map<string, AlbumElement[]>(); elements.forEach(element => { const key = element.type === 'frame' && element.groupId ? `group:${element.groupId}` : element.id; units.set(key, [...(units.get(key) ?? []), element]); }); return [...units.values()]; }

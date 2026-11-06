@@ -53,6 +53,7 @@ export function unionSelectedFrames(elements: AlbumElement[]): FrameElement {
   if (elements.length < 2) throw new Error('Select at least two empty frames to create a Union Shape.');
   if (elements.some(element => element.type !== 'frame')) throw new Error('Union Shape only supports frames. Remove text from the selection.');
   const frames = elements as FrameElement[];
+  if (frames.some(frame => frame.locked)) throw new Error('Unlock the selected frames before creating a Union Shape.');
   if (frames.some(frame => frame.photo)) throw new Error('Remove photos from the selected frames before creating a Union Shape.');
   const pathsByFrame = frames.map(frameVisiblePaths);
   if (pathsByFrame.some(paths => !paths.length)) throw new Error('One of the selected frames has invalid geometry.');
@@ -65,5 +66,5 @@ export function unionSelectedFrames(elements: AlbumElement[]): FrameElement {
   if (width < .01 || height < .01) throw new Error('The selected frames cannot form a usable Union Shape.');
   const paths = pagePaths.map(path => path.map(point => ({ x: point.x - left, y: point.y - top })));
   const style = frames[frames.length - 1];
-  return { id: uid(), type: 'frame', x: left, y: top, width, height, rotation: 0, fill: style.fill, borderEnabled: style.borderEnabled, borderThickness: style.borderThickness, borderMargin: style.borderMargin, borderColor: style.borderColor, geometry: { base: { kind: 'rect', x: 0, y: 0, width, height }, clip: [{ x: 0, y: 0 }, { x: width, y: 0 }, { x: width, y: height }, { x: 0, y: height }], paths } };
+  return { id: uid(), type: 'frame', x: left, y: top, width, height, rotation: 0, fill: style.fill, locked: false, borderEnabled: style.borderEnabled, borderThickness: style.borderThickness, borderMargin: style.borderMargin, borderColor: style.borderColor, geometry: { base: { kind: 'rect', x: 0, y: 0, width, height }, clip: [{ x: 0, y: 0 }, { x: width, y: 0 }, { x: width, y: height }, { x: 0, y: height }], paths } };
 }

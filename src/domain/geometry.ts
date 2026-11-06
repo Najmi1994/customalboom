@@ -19,6 +19,7 @@ export function flipSpreadSide(page: Page): AlbumElement[] {
   if (page.mode !== 'spread') return page.elements;
   const width = pageWidth(page);
   return page.elements.map(element => {
+    if (element.type === 'frame' && element.locked) return element;
     const box = bounds(element);
     return { ...element, x: element.x + width - box.x - box.right };
   });
@@ -101,6 +102,7 @@ export function centerInBox(e: AlbumElement, box: { x: number; y: number; right:
   return { ...e, x: e.x + (horizontal ? (box.x + box.right - b.x - b.right) / 2 : 0), y: e.y + (vertical ? (box.y + box.bottom - b.y - b.bottom) / 2 : 0) };
 }
 export function fillRectangleToSide(frame: FrameElement, page: Page): FrameElement | null {
+  if (frame.locked) return null;
   const base = frame.geometry.base, corners = [{ x: 0, y: 0 }, { x: frame.width, y: 0 }, { x: frame.width, y: frame.height }, { x: 0, y: frame.height }];
   const plainRectangle = !frame.geometry.paths && base.kind === 'rect' && Math.abs(base.x) < EPS && Math.abs(base.y) < EPS && Math.abs(base.width - frame.width) < EPS && Math.abs(base.height - frame.height) < EPS && frame.geometry.clip.length === 4 && corners.every(corner => frame.geometry.clip.some(point => Math.abs(point.x - corner.x) < EPS && Math.abs(point.y - corner.y) < EPS));
   if (!plainRectangle) return null;
@@ -108,6 +110,7 @@ export function fillRectangleToSide(frame: FrameElement, page: Page): FrameEleme
   return { ...(resizeElement(frame, width, height) as FrameElement), x: region.x, y: region.y, rotation: 0 };
 }
 export function clampTransform(from: AlbumElement, to: AlbumElement, page: Page): AlbumElement {
+  if (from.type === 'frame' && from.locked) return from;
   if (insidePage(to, page)) return to;
   if (!insidePage(from, page)) return clampMove(from, page);
   const candidate = (t: number) => {

@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { infoBannersSchema, type InfoBanner } from '../info/domain';
 import { managedTemplateSchema, templateCategorySchema, type ManagedTemplate, type TemplateCategory } from "../templates/domain";
+import { fontFamilySchema, MAX_GOOGLE_FONTS } from "../fonts/domain";
 
 export const MALAYSIA_STATES = [
   "Johor",
@@ -96,6 +98,7 @@ export const supportAccountSchema = z.object({
 });
 
 export const supportSettingsSchema = z.object({
+  portrait: z.object({ id: z.string().uuid(), extension: z.enum(['png', 'jpg', 'webp']) }).strict().optional(),
   titleMs: z.string().trim().min(1, "Tajuk Melayu diperlukan.").max(160),
   titleEn: z.string().trim().min(1, "English title is required.").max(160),
   messageMs: z.string().trim().min(1, "Mesej Melayu diperlukan.").max(4000),
@@ -137,6 +140,8 @@ export type StyleStore = {
   shops: PrintShop[];
   templateCategories: TemplateCategory[];
   templates: ManagedTemplate[];
+  googleFonts: string[];
+  infoBanners: InfoBanner[];
 };
 
 export type PublicPrintShop = Omit<PrintShop, "displayFrom" | "displayTo" | "logo" | "createdAt" | "updatedAt"> & {
@@ -154,6 +159,13 @@ export const passwordDigestSchema = z.object({
   iterations: z.number().int().min(1),
   salt: z.string().min(1),
   hash: z.string().min(1),
+});
+
+export const passwordChangeSchema = z.object({
+  currentPassword: z.string().min(1, "Password semasa diperlukan.").max(512),
+  newPassword: z.string().min(12, "Password baharu mesti sekurang-kurangnya 12 aksara.").max(512),
+}).superRefine((value, context) => {
+  if (value.currentPassword === value.newPassword) context.addIssue({ code: "custom", path: ["newPassword"], message: "Password baharu mesti berbeza daripada password semasa." });
 });
 
 export const printShopSchema = z.object({
@@ -186,6 +198,8 @@ export const styleStoreSchema = z.object({
   shops: z.array(printShopSchema),
   templateCategories: z.array(templateCategorySchema).optional().default([]),
   templates: z.array(managedTemplateSchema).optional().default([]),
+  googleFonts: z.array(fontFamilySchema).max(MAX_GOOGLE_FONTS).optional().default([]),
+  infoBanners: infoBannersSchema.optional().default([]),
 });
 
 export function publicSupportSettings(settings: SupportSettings): SupportSettings {

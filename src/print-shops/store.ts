@@ -143,6 +143,8 @@ export async function ensureStyleStore(): Promise<StoreSnapshot> {
     shops: [],
     templateCategories: [],
     templates: [],
+    googleFonts: [],
+    infoBanners: [],
   };
   const created = await getPrintShopBucket().put(STORE_KEY, JSON.stringify(data), {
     onlyIf: { etagDoesNotMatch: "*" },
@@ -166,6 +168,6 @@ export function nextStore(snapshot: StoreSnapshot, shops: StyleStore["shops"]): 
   return { ...snapshot.data, revision: snapshot.data.revision + 1, shops };
 }
 
-export function nextStorePatch(snapshot: StoreSnapshot, patch: Partial<Pick<StyleStore, "shops" | "adminContactPhone" | "supportSettings" | "templateCategories" | "templates">>): StyleStore {
+export function nextStorePatch(snapshot: StoreSnapshot, patch: Partial<Pick<StyleStore, "shops" | "adminContactPhone" | "supportSettings" | "templateCategories" | "templates" | "googleFonts" | "infoBanners">>): StyleStore {
   return { ...snapshot.data, ...patch, revision: snapshot.data.revision + 1 };
 }

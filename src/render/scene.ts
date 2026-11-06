@@ -24,6 +24,12 @@ function strokeFrameBoundary(ctx: CanvasRenderingContext2D, frame: FrameElement,
   tracePaths(ctx, paths); ctx.stroke();
   ctx.restore();
 }
+export function drawFrameSelection(ctx: CanvasRenderingContext2D, frame: FrameElement, color: string, thickness: number) {
+  ctx.save();
+  if (frame.flipX || frame.flipY) { ctx.translate(frame.flipX ? frame.width : 0, frame.flipY ? frame.height : 0); ctx.scale(frame.flipX ? -1 : 1, frame.flipY ? -1 : 1); }
+  strokeFrameBoundary(ctx, frame, color, 0, thickness);
+  ctx.restore();
+}
 export function clipFrame(ctx: CanvasRenderingContext2D, f: FrameElement) {
   if (f.geometry.paths?.length) { tracePaths(ctx, f.geometry.paths); ctx.clip(); return; }
   const b = f.geometry.base; ctx.beginPath();

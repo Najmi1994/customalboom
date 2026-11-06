@@ -1,5 +1,6 @@
 import { CutLink, CutShape, FRAME_BORDER_THICKNESS, FrameElement, Point } from './model';
 import { clampPhoto, geometryBounds, resizeElement } from './geometry';
+import type { CutExecutor } from './cutter';
 
 const EPSILON = 1e-5;
 
@@ -57,7 +58,7 @@ function analyzeHistory(elements: FrameElement[], selectedSet: Set<string>, sele
 }
 
 export function sourceFrame(link: Pick<CutLink, 'operationId' | 'source'>, fill: string): FrameElement {
-  return { id: link.operationId, type: 'frame', fill, borderEnabled: false, borderThickness: FRAME_BORDER_THICKNESS, borderMargin: 0, borderColor: '#000000', ...structuredClone(link.source) };
+  return { id: link.operationId, type: 'frame', fill, locked: false, borderEnabled: false, borderThickness: FRAME_BORDER_THICKNESS, borderMargin: 0, borderColor: '#000000', ...structuredClone(link.source) };
 }
 
 export function mergeRecutPiece(current: FrameElement, recut: FrameElement, path: CutLink[]): FrameElement {
@@ -77,7 +78,7 @@ export function mergeRecutPiece(current: FrameElement, recut: FrameElement, path
   };
 }
 
-export async function recutCutTree(tree: CutTree, gap: number, cut: (frame: FrameElement, start: Point, end: Point, gap: number) => Promise<[FrameElement, FrameElement]>): Promise<Map<string, FrameElement>> {
+export async function recutCutTree(tree: CutTree, gap: number, cut: CutExecutor): Promise<Map<string, FrameElement>> {
   const updates = new Map<string, FrameElement>();
   async function visit(operationId: string, frame: FrameElement, path: CutLink[]): Promise<void> {
     const operation = tree.operations.get(operationId)!;

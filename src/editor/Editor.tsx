@@ -1,16 +1,22 @@
 'use client';
+import SupportMessage from '../support/SupportMessage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowLeftRight, AtSign, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Coffee, Copy, Eye, FileImage, FilePlus2, FileText, FolderOpen, Grid2X2, Landmark, LayoutGrid, Loader2, Maximize2, Minimize2, Moon, Plus, Redo2, Save, Search, Store, Sun, Undo2, X } from 'lucide-react';
-import { AlbumElement, FrameElement, LayoutTemplate, Page, Point, asAlbumTemplate, asTemplate, formatMeasure, makeProject, pageWidth, photoUsage, photoUsageForAssets, uid } from '../domain/model';
+import { ArrowDownToLine, ArrowLeftRight, AtSign, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Coffee, Copy, Eye, FileArchive, FileImage, FilePlus2, FileText, FolderOpen, Grid2X2, Landmark, LayoutGrid, Loader2, Lock, LockOpen, Maximize2, Minimize2, Moon, Plus, Redo2, Save, Search, Store, Sun, Undo2, X } from 'lucide-react';
+import { AlbumElement, FrameElement, LayoutTemplate, Page, Point, asAlbumTemplate, asTemplate, formatMeasure, makeProject, pageWidth, photoUsage, photoUsageForAssets, setPageFramesLocked, uid } from '../domain/model';
 import { clipPageToSafeArea, convertPage, halfCutLine, insidePage, safeRegions } from '../domain/geometry';
 import { analyzeCutSelection, cutPath, linkCutPieces, recutCutTree, resizeGeometricLayout } from '../domain/cutLinks';
+import { cutFrame, type CutExecutor } from '../domain/cutter';
 import { DivisionDirection, divideFrame } from '../domain/division';
-import { PhotoLibrary, PhotoReader } from '../io/photos';
+import { PhotoLibrary, PhotoReader, recommendedPhotoImportConcurrency } from '../io/photos';
 import { chooseDirectory, download, loadTemplates, parseProject, parseTemplate, permission, readJson, readValue, safeName, storeValue } from '../io/storage';
 import { ManagedPhotoFolder, PHOTO_FOLDERS_KEY, exclusiveFolderAssetIds, readPhotoFolder, restorePhotoFolders, storePhotoFolders } from '../io/photoFolders';
+import { prepareProjectPackage, readProjectPackage, writeProjectPackage, type OpenedProjectPackage, type ProjectPackageProgress } from '../io/projectPackage';
 import type { ExportKind } from '../io/export';
 import { useHistory } from './useHistory';
 import { useEditorActions } from './useEditorActions';
+import { useFileSaveReminder } from './useFileSaveReminder';
+import { FILE_SAVE_RECORD_KEY } from './fileSaveState';
+import FileSaveStatus from './FileSaveStatus';
 import { LeftPanel, PagePreview, PagesPanel, PhotosPanel } from './Panels';
 import { builtinLayouts } from './builtinLayouts';
 import Canvas from './Canvas';
@@ -21,9 +27,11 @@ import PhotoFolderManagerModal, { FolderRemovalDetails } from './PhotoFolderMana
 import { usePhotoEdit } from './usePhotoEdit';
 import { DEFAULT_SUPPORT_SETTINGS, type SupportSettings } from '../print-shops/domain';
 import type { PublicTemplate } from '../templates/domain';
+import { BUILTIN_FONTS, googleFontsStylesheet, uniqueFontFamilies } from '../fonts/domain';
 
 type PublicTemplateCategory = { id: string; name: string };
 type PublicTemplateCatalog = { categories: PublicTemplateCategory[]; templates: PublicTemplate[] };
+const executeLocalCut = ((frame, start, end, gap) => cutFrame({ frame, start, end, gap })) satisfies CutExecutor;
 
 export default function Editor() {
   useEffect(() => {
@@ -34,13 +42,15 @@ export default function Editor() {
   const history = useHistory(), { project, current, apply } = history;
   const [ready, setReady] = useState(false), [pageId, setPageId] = useState(''), [selected, setSelected] = useState<string[]>([]);
   const [leftPanelTab, setLeftPanelTab] = useState<'build' | 'page'>('build');
-  const [library, setLibrary] = useState<PhotoLibrary>(new Map()), libraryRef = useRef<PhotoLibrary>(new Map());
+  const [library, setLibrary] = useState<PhotoLibrary>(new Map()), libraryRef = useRef<PhotoLibrary>(new Map()), embeddedLibraryRef = useRef<PhotoLibrary>(new Map());
+  const [embeddedPhotoIds, setEmbeddedPhotoIds] = useState<ReadonlySet<string>>(new Set());
   const [photoFolders, setPhotoFolders] = useState<ManagedPhotoFolder[]>([]), photoFoldersRef = useRef<ManagedPhotoFolder[]>([]), folderLibrariesRef = useRef<Map<string, PhotoLibrary>>(new Map());
   const [theme, setTheme] = useState<'light' | 'gray'>('light'), [toast, setToast] = useState(''), toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [tool, setTool] = useState<'select' | 'hand' | 'cut' | 'half-cut'>('select'), [cutGap, setCutGap] = useState(9), [duplicateGap, setDuplicateGap] = useState(9), [duplicateDirection, setDuplicateDirection] = useState<'left' | 'right' | 'up' | 'down'>('right'), [busyCut, setBusyCut] = useState(false), [busySpacer, setBusySpacer] = useState(false);
   const [importing, setImporting] = useState(''), [importingFolderId, setImportingFolderId] = useState<string>(), [selectedPhotos, setSelectedPhotos] = useState<string[]>([]), [backgroundMode, setBackgroundMode] = useState(false);
   const [layoutOpen, setLayoutOpen] = useState(false), [printShopsOpen, setPrintShopsOpen] = useState(false), [templates, setTemplates] = useState<LayoutTemplate[]>([]), [templateFolder, setTemplateFolder] = useState<FileSystemDirectoryHandle | undefined>(), [templateTab, setTemplateTab] = useState<'starter' | 'saved' | 'more'>('starter');
   const [onlineCatalog, setOnlineCatalog] = useState<PublicTemplateCatalog>({ categories: [], templates: [] }), [onlineStatus, setOnlineStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle'), [onlineCategory, setOnlineCategory] = useState('all'), [onlineQuery, setOnlineQuery] = useState(''), [loadingOnlineId, setLoadingOnlineId] = useState('');
+  const [googleFonts, setGoogleFonts] = useState<string[]>([]);
   const [onlineDrilldown, setOnlineDrilldown] = useState<{ template: LayoutTemplate; summary: PublicTemplate } | null>(null);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false), [saveTemplateScope, setSaveTemplateScope] = useState<'current' | 'all' | null>(null), [templateName, setTemplateName] = useState(''), [savingTemplate, setSavingTemplate] = useState(false);
   const [modeOpen, setModeOpen] = useState(false), [modeChoice, setModeChoice] = useState<'blank' | 'left' | 'right'>('left');
@@ -48,11 +58,14 @@ export default function Editor() {
   const [paddingWarning, setPaddingWarning] = useState<{ patch: Partial<Page>; frames: number; texts: number } | null>(null);
   const [menu, setMenu] = useState<'file' | 'export' | null>(null), [helpOpen, setHelpOpen] = useState(false), [coffeeOpen, setCoffeeOpen] = useState(false), [saveWarningOpen, setSaveWarningOpen] = useState(false), [folderManagerOpen, setFolderManagerOpen] = useState(false), [folderRemoval, setFolderRemoval] = useState<FolderRemovalDetails>(), [isFullscreen, setIsFullscreen] = useState(false), [previewPageId, setPreviewPageId] = useState<string | null>(null);
   const [exporting, setExporting] = useState<{ kind: ExportKind; done: number; total: number } | null>(null), abortExport = useRef<AbortController | null>(null);
-  const [saveStatus, setSaveStatus] = useState('Saved locally'), importingRef = useRef(false), alive = useRef(true), projectInput = useRef<HTMLInputElement>(null);
+  const [packageTransfer, setPackageTransfer] = useState<({ kind: 'saving' | 'opening' } & ProjectPackageProgress) | null>(null), packageAbort = useRef<AbortController | null>(null);
+  const [saveStatus, setSaveStatus] = useState('Checking browser autosave…'), importingRef = useRef(false), alive = useRef(true), projectInput = useRef<HTMLInputElement>(null);
+  const fileSave = useFileSaveReminder();
   const page = project.pages.find(p => p.id === pageId) ?? project.pages[0];
   const previewMode = previewPageId !== null, previewPage = project.pages.find(p => p.id === previewPageId) ?? page, previewIndex = project.pages.findIndex(p => p.id === previewPage.id);
   const usage = useMemo(() => photoUsage(project), [project]);
-  const visiblePhotoIds = useMemo(() => new Set(photoFolders.filter(folder => folder.show).flatMap(folder => folder.currentAssetIds)), [photoFolders]);
+  const visiblePhotoIds = useMemo(() => new Set([...embeddedPhotoIds, ...photoFolders.filter(folder => folder.show).flatMap(folder => folder.currentAssetIds)]), [embeddedPhotoIds, photoFolders]);
+  const typefaces = useMemo(() => uniqueFontFamilies([...BUILTIN_FONTS, ...googleFonts]), [googleFonts]);
   const notify = useCallback((message: string) => { setToast(message); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(''), 5500); }, []);
   const report = useCallback((error: unknown) => { if (error instanceof DOMException && error.name === 'AbortError') return; notify(error instanceof Error ? error.message : 'Something went wrong. Please try again.'); }, [notify]);
   const actions = useEditorActions(history, page, selected, setSelected, library, notify);
@@ -69,7 +82,7 @@ export default function Editor() {
     }
     actions.updatePageSettings({ ...patch, clipContentToPadding: false });
   }
-  const { photoDraft, setPhotoDraft, comparePhoto, setComparePhoto, begin: beginPhotoEdit, finish: finishPhotoEdit } = usePhotoEdit({ page, library, busy: !!(exporting || busyCut || busySpacer || importing), onBegin: id => { setMenu(null); setTool('select'); setSelected([id]); setLeftPanelTab('build'); }, onChange: actions.setElements, notify });
+  const { photoDraft, setPhotoDraft, comparePhoto, setComparePhoto, begin: beginPhotoEdit, finish: finishPhotoEdit } = usePhotoEdit({ page, library, busy: !!(exporting || packageTransfer || busyCut || busySpacer || importing), onBegin: id => { setMenu(null); setTool('select'); setSelected([id]); setLeftPanelTab('build'); }, onChange: actions.setElements, notify });
   const selectPage = (id: string) => { setPageId(id); setSelected([]); setTool('select'); setBackgroundMode(false); };
   const selectAdjacentPage = (direction: -1 | 1) => { const index = project.pages.findIndex(item => item.id === page.id); if (index < 0) return; const next = Math.max(0, Math.min(project.pages.length - 1, index + direction)); selectPage(project.pages[next].id); requestAnimationFrame(() => document.querySelector(`[data-page-id="${project.pages[next].id}"]`)?.scrollIntoView({ block: 'nearest' })); };
   const enterPreview = () => { setMenu(null); setToast(''); setPreviewPageId(page.id); };
@@ -81,11 +94,33 @@ export default function Editor() {
     photoFoldersRef.current = next; setPhotoFolders(next);
     await storeValue(PHOTO_FOLDERS_KEY, storePhotoFolders(next));
   }, []);
+  useEffect(() => {
+    let controller: AbortController | undefined;
+    const refreshFonts = () => {
+      controller?.abort(); controller = new AbortController();
+      fetch('/api/fonts', { signal: controller.signal }).then(response => response.ok ? response.json() as Promise<{ fonts: string[] }> : Promise.reject()).then(payload => setGoogleFonts(payload.fonts)).catch(() => {});
+    };
+    const refreshVisibleFonts = () => { if (document.visibilityState === 'visible') refreshFonts(); };
+    refreshFonts();
+    window.addEventListener('focus', refreshFonts); document.addEventListener('visibilitychange', refreshVisibleFonts);
+    return () => { controller?.abort(); window.removeEventListener('focus', refreshFonts); document.removeEventListener('visibilitychange', refreshVisibleFonts); };
+  }, []);
+  useEffect(() => {
+    const id = 'customalboom-google-fonts';
+    document.getElementById(id)?.remove();
+    if (!googleFonts.length) return;
+    const link = document.createElement('link'); link.id = id; link.rel = 'stylesheet'; link.href = googleFontsStylesheet(googleFonts); document.head.append(link);
+    return () => link.remove();
+  }, [googleFonts]);
   const rebuildCombinedLibrary = useCallback((folders = photoFoldersRef.current) => {
-    const combined: PhotoLibrary = new Map();
+    const combined: PhotoLibrary = new Map(embeddedLibraryRef.current);
     for (const folder of folders) for (const [id, photo] of folderLibrariesRef.current.get(folder.id) ?? []) if (!combined.has(id)) combined.set(id, photo);
     libraryRef.current = combined; setLibrary(new Map(combined));
   }, []);
+  const replaceEmbeddedLibrary = useCallback((next: PhotoLibrary) => {
+    embeddedLibraryRef.current.forEach(photo => URL.revokeObjectURL(photo.previewUrl));
+    embeddedLibraryRef.current = next; setEmbeddedPhotoIds(new Set(next.keys())); rebuildCombinedLibrary();
+  }, [rebuildCombinedLibrary]);
   const importFolder = useCallback(async (folderId: string, promptPermission = true) => {
     if (importingRef.current) return;
     const folder = photoFoldersRef.current.find(item => item.id === folderId); if (!folder) return;
@@ -93,20 +128,25 @@ export default function Editor() {
       await commitPhotoFolders(photoFoldersRef.current.map(item => item.id === folderId ? { ...item, status: 'reconnect' } : item)); return;
     }
     importingRef.current = true; setImportingFolderId(folderId); setImporting(`Reading ${folder.name}…`);
-    let reader: PhotoReader | undefined; const nextLibrary: PhotoLibrary = new Map(), assets: typeof project.assets = [], seen = new Set<string>(); let count = 0, failed = 0, limited = 0;
-    const otherAssetIds = new Set([...folderLibrariesRef.current.entries()].filter(([id]) => id !== folderId).flatMap(([, photos]) => [...photos.keys()])), acceptedAssetIds = new Set(otherAssetIds);
+    const readers: PhotoReader[] = [], nextLibrary: PhotoLibrary = new Map(), assets: typeof project.assets = [], seen = new Set<string>(); let count = 0, checked = 0, failed = 0, limited = 0, lastProgressAt = 0;
+    const otherAssetIds = new Set([...embeddedLibraryRef.current.keys(), ...[...folderLibrariesRef.current.entries()].filter(([id]) => id !== folderId).flatMap(([, photos]) => [...photos.keys()])]), acceptedAssetIds = new Set(otherAssetIds);
     try {
-      reader = new PhotoReader();
-      for await (const entry of readPhotoFolder(folder.handle)) {
-        if (!alive.current) break;
-        try {
-          const photo = await reader.read(entry.file, entry.path);
-          if (seen.has(photo.ref.id)) { URL.revokeObjectURL(photo.previewUrl); continue; }
-          seen.add(photo.ref.id);
-          if (!acceptedAssetIds.has(photo.ref.id) && acceptedAssetIds.size >= 10000) { URL.revokeObjectURL(photo.previewUrl); limited++; continue; }
-          acceptedAssetIds.add(photo.ref.id); nextLibrary.set(photo.ref.id, photo); assets.push(photo.ref); count++; setImporting(`Reading ${folder.name} · ${count} ready`);
-        } catch { failed++; }
-      }
+      const iterator = readPhotoFolder(folder.handle)[Symbol.asyncIterator](), concurrency = recommendedPhotoImportConcurrency();
+      for (let index = 0; index < concurrency; index++) readers.push(new PhotoReader());
+      const publishProgress = () => { const now = performance.now(); if (now - lastProgressAt < 150) return; lastProgressAt = now; if (alive.current) setImporting(`Reading ${folder.name} · ${count} ready · ${checked} checked`); };
+      await Promise.all(readers.map(async reader => {
+        while (alive.current) {
+          const entry = await iterator.next(); if (entry.done) return;
+          try {
+            const photo = await reader.read(entry.value.file, entry.value.path);
+            if (seen.has(photo.ref.id)) { URL.revokeObjectURL(photo.previewUrl); continue; }
+            seen.add(photo.ref.id);
+            if (!acceptedAssetIds.has(photo.ref.id) && acceptedAssetIds.size >= 10000) { URL.revokeObjectURL(photo.previewUrl); limited++; continue; }
+            acceptedAssetIds.add(photo.ref.id); nextLibrary.set(photo.ref.id, photo); assets.push(photo.ref); count++;
+          } catch { failed++; }
+          finally { checked++; publishProgress(); }
+        }
+      }));
       if (!alive.current) return;
       const previous = folderLibrariesRef.current.get(folderId); folderLibrariesRef.current.set(folderId, nextLibrary); previous?.forEach(photo => URL.revokeObjectURL(photo.previewUrl));
       const knownAssetIds = [...new Set([...folder.knownAssetIds, ...nextLibrary.keys()])];
@@ -116,7 +156,7 @@ export default function Editor() {
     } catch (error) {
       nextLibrary.forEach(photo => URL.revokeObjectURL(photo.previewUrl));
       await commitPhotoFolders(photoFoldersRef.current.map(item => item.id === folderId ? { ...item, status: 'reconnect' } : item)); report(error);
-    } finally { reader?.dispose(); importingRef.current = false; if (alive.current) { setImporting(''); setImportingFolderId(undefined); } }
+    } finally { readers.forEach(reader => reader.dispose()); importingRef.current = false; if (alive.current) { setImporting(''); setImportingFolderId(undefined); } }
   }, [commitPhotoFolders, history.mergeAssets, notify, rebuildCombinedLibrary, report]);
   async function addPhotoFolder() {
     try {
@@ -144,6 +184,8 @@ export default function Editor() {
     (async () => {
       try {
         const saved = await readValue<unknown>('project'); let restoredProject = current.current; if (saved && !cancelled) { const p = parseProject(saved); restoredProject = p; history.replace(p); setPageId(p.pages[0].id); }
+        const fileRecord = await readValue<unknown>(FILE_SAVE_RECORD_KEY).catch(() => undefined);
+        if (!cancelled) fileSave.reset(restoredProject, !!saved, fileRecord);
         const savedTheme = await readValue<'light' | 'gray'>('theme'); if (savedTheme && !cancelled) setTheme(savedTheme);
         const tf = await readValue<FileSystemDirectoryHandle>('templateFolder'); if (tf && !cancelled) { setTemplateFolder(tf); if (await permission(tf, 'read', false)) setTemplates((await loadTemplates(tf)).templates); }
         const storedFolders = await readValue<unknown>(PHOTO_FOLDERS_KEY); let folders = restorePhotoFolders(storedFolders);
@@ -155,22 +197,33 @@ export default function Editor() {
         const checked: ManagedPhotoFolder[] = [];
         for (const folder of folders) checked.push({ ...folder, status: await permission(folder.handle, 'read', false) ? 'connected' : 'reconnect' });
         if (!cancelled) { photoFoldersRef.current = checked; setPhotoFolders(checked); void (async () => { for (const folder of checked) if (folder.status === 'connected' && !cancelled) await importFolder(folder.id, false); })(); }
-      } catch { if (!cancelled) notify('Your previous browser save could not be restored. You can still open a project file.'); }
+      } catch { if (!cancelled) { fileSave.reset(current.current); notify('Your previous browser save could not be restored. You can still open a project file.'); } }
       finally { if (!cancelled) setReady(true); }
     })();
-    return () => { cancelled = true; alive.current = false; };
+    return () => { cancelled = true; alive.current = false; embeddedLibraryRef.current.forEach(photo => URL.revokeObjectURL(photo.previewUrl)); };
   }, []);
-  useEffect(() => { if (!ready) return; setSaveStatus('Saving…'); const timer = setTimeout(() => { storeValue('project', project).then(() => setSaveStatus('Saved locally')).catch(() => { setSaveStatus('Autosave unavailable'); notify('Browser storage is unavailable or full. Save a project file to keep your work.'); }); }, 650); return () => clearTimeout(timer); }, [project, ready, notify]);
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    const pending = setTimeout(() => setSaveStatus('Autosaving in browser…'), 0);
+    const timer = setTimeout(() => {
+      fileSave.observe(project);
+      storeValue('project', project).then(() => { if (!cancelled) setSaveStatus('Autosaved in browser'); }).catch(() => {
+        if (!cancelled) { setSaveStatus('Browser autosave unavailable'); notify('Browser storage is unavailable or full. Save a project file to keep your work.'); }
+      });
+    }, 650);
+    return () => { cancelled = true; clearTimeout(pending); clearTimeout(timer); };
+  }, [project, ready, notify, fileSave.observe]);
   useEffect(() => { if (ready) storeValue('theme', theme).catch(() => {}); }, [theme, ready]);
   useEffect(() => { setSelected(ids => ids.filter(id => page.elements.some(e => e.id === id))); }, [page]);
   useEffect(() => { setSelectedPhotos(ids => ids.filter(id => library.has(id) && visiblePhotoIds.has(id))); }, [library, visiblePhotoIds]);
   useEffect(() => { const sync = () => setIsFullscreen(!!document.fullscreenElement); sync(); document.addEventListener('fullscreenchange', sync); return () => document.removeEventListener('fullscreenchange', sync); }, []);
-  useEffect(() => { function key(e: KeyboardEvent) { const pressed = e.key.toLowerCase(); if ((e.ctrlKey || e.metaKey) && pressed === 'p') { e.preventDefault(); if (document.querySelector('[role="dialog"]')) return; if (photoDraft) { notify('Finish or cancel Photo Adjustments before opening Preview.'); return; } previewMode ? exitPreview() : enterPreview(); return; } if (photoDraft) return; if ((e.ctrlKey || e.metaKey) && pressed === 'm') { e.preventDefault(); setHelpOpen(open => !open); return; } if ((e.ctrlKey || e.metaKey) && pressed === 'f') { e.preventDefault(); void toggleFullscreen(); return; } if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName) || document.querySelector('[role="dialog"]')) return; if ((e.ctrlKey || e.metaKey) && pressed === 'z') { e.preventDefault(); e.shiftKey ? history.redo() : history.undo(); } else if ((e.ctrlKey || e.metaKey) && pressed === 'y') { e.preventDefault(); history.redo(); } else if ((e.ctrlKey || e.metaKey) && pressed === 's') { e.preventDefault(); saveProject(); } else if ((e.ctrlKey || e.metaKey) && pressed === 'k') { e.preventDefault(); actions.unionFrames(); } else if ((e.ctrlKey || e.metaKey) && pressed === 'g') { e.preventDefault(); actions.toggleGroup(); } else if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); selectAdjacentPage(e.key === 'ArrowUp' ? -1 : 1); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'PageUp' || e.key === 'PageDown')) { e.preventDefault(); selectAdjacentPage(e.key === 'PageUp' ? -1 : 1); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 's') { e.preventDefault(); actions.addElement('rect'); setTool('select'); setLeftPanelTab('build'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'c') { e.preventDefault(); toggleCutterMode(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'd') { e.preventDefault(); toggleHalfCutterMode(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'p') { e.preventDefault(); actions.shortcutAlign('page'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'v') { e.preventDefault(); actions.shortcutAlign('middle'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'f') { e.preventDefault(); actions.align('center'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'z') { e.preventDefault(); actions.shortcutAlign('leftCenter'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'x') { e.preventDefault(); actions.shortcutAlign('rightCenter'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 't') { e.preventDefault(); actions.align('top'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'b') { e.preventDefault(); actions.align('bottom'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'l') { e.preventDefault(); actions.align('left'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'r') { e.preventDefault(); actions.align('right'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === '1') { e.preventDefault(); actions.align('distributeX'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === '2') { e.preventDefault(); actions.align('distributeY'); } else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); actions.deleteElements(); } else if (e.key === 'Escape') { setSelected([]); setTool('select'); setMenu(null); setBackgroundMode(false); } } window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); });
+  useEffect(() => { function key(e: KeyboardEvent) { const pressed = e.key.toLowerCase(); if ((e.ctrlKey || e.metaKey) && pressed === 'p') { e.preventDefault(); if (document.querySelector('[role="dialog"]')) return; if (photoDraft) { notify('Finish or cancel Photo Adjustments before opening Preview.'); return; } previewMode ? exitPreview() : enterPreview(); return; } if (photoDraft) return; if ((e.ctrlKey || e.metaKey) && pressed === 'm') { e.preventDefault(); setHelpOpen(open => !open); return; } if ((e.ctrlKey || e.metaKey) && pressed === 'f') { e.preventDefault(); void toggleFullscreen(); return; } if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName) || document.querySelector('[role="dialog"]')) return; if ((e.ctrlKey || e.metaKey) && pressed === 'z') { e.preventDefault(); e.shiftKey ? history.redo() : history.undo(); } else if ((e.ctrlKey || e.metaKey) && pressed === 'y') { e.preventDefault(); history.redo(); } else if ((e.ctrlKey || e.metaKey) && pressed === 's') { e.preventDefault(); saveProject(); } else if ((e.ctrlKey || e.metaKey) && pressed === 'k') { e.preventDefault(); actions.unionFrames(); } else if ((e.ctrlKey || e.metaKey) && pressed === 'g') { e.preventDefault(); actions.toggleGroup(); } else if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); selectAdjacentPage(e.key === 'ArrowUp' ? -1 : 1); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'PageUp' || e.key === 'PageDown')) { e.preventDefault(); selectAdjacentPage(e.key === 'PageUp' ? -1 : 1); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 's') { e.preventDefault(); actions.addElement('rect'); setTool('select'); setLeftPanelTab('build'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'c') { e.preventDefault(); toggleCutterMode(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'd') { e.preventDefault(); toggleHalfCutterMode(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'p') { e.preventDefault(); actions.shortcutAlign('page'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'v') { e.preventDefault(); actions.shortcutAlign('middle'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'f') { e.preventDefault(); actions.align('center'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'z') { e.preventDefault(); actions.shortcutAlign('leftCenter'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'x') { e.preventDefault(); actions.shortcutAlign('rightCenter'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 't') { e.preventDefault(); actions.align('top'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'b') { e.preventDefault(); actions.align('bottom'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'l') { e.preventDefault(); actions.align('left'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'r') { e.preventDefault(); actions.align('right'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === '1') { e.preventDefault(); actions.align('distributeX'); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === '2') { e.preventDefault(); actions.align('distributeY'); } else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); actions.deleteElements(); } else if (e.key === 'Escape') { setSelected([]); setSelectedPhotos([]); setTool('select'); setMenu(null); setBackgroundMode(false); } } window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); });
   useEffect(() => { function key(e: KeyboardEvent) { if (photoDraft || previewMode || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'd') return; if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName) || document.querySelector('[role="dialog"]')) return; e.preventDefault(); e.stopImmediatePropagation(); actions.duplicatePosition(duplicateDirection, duplicateGap); } window.addEventListener('keydown', key, true); return () => window.removeEventListener('keydown', key, true); });
-  useEffect(() => { function key(e: KeyboardEvent) { if (photoDraft) return; if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName) || document.querySelector('[role="dialog"]')) return; const pressed = e.key.toLowerCase(); if ((e.ctrlKey || e.metaKey) && pressed === 'u') { e.preventDefault(); actions.ungroupFrames(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'e') { e.preventDefault(); actions.fillRectangleSide(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'o') { e.preventDefault(); actions.removePhotos(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === '`') { e.preventDefault(); void toggleFullscreen(); } } window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); });
+  useEffect(() => { function key(e: KeyboardEvent) { if (photoDraft || e.isComposing) return; if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName) || document.querySelector('[role="dialog"]')) return; const pressed = e.key.toLowerCase(); if ((e.ctrlKey || e.metaKey) && pressed === 'u') { e.preventDefault(); actions.ungroupFrames(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'e') { e.preventDefault(); actions.fillRectangleSide(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'o') { e.preventDefault(); actions.removePhotos(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'q' && !previewMode && !e.repeat) { e.preventDefault(); actions.cycleSelectedPhotos(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === 'i' && !previewMode && !e.repeat) { e.preventDefault(); actions.toggleFrameLock(); } else if (!e.ctrlKey && !e.metaKey && !e.altKey && pressed === '`') { e.preventDefault(); void toggleFullscreen(); } } window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); });
   useEffect(() => {
     if (!previewMode) return;
-    const plainShortcuts = new Set(['pageup', 'pagedown', 's', 'c', 'd', 'p', 'v', 'f', 'z', 'x', 't', 'b', 'l', 'r', 'e', 'o', '1', '2', 'delete', 'backspace', 'f4', ' ']), modifiedShortcuts = new Set(['m', 'z', 'y', 's', 'g', 'u', 'd', 'k']);
+    const plainShortcuts = new Set(['pageup', 'pagedown', 's', 'c', 'd', 'p', 'v', 'f', 'z', 'x', 't', 'b', 'l', 'r', 'e', 'o', 'q', 'i', '1', '2', 'delete', 'backspace', 'f4', ' ']), modifiedShortcuts = new Set(['m', 'z', 'y', 's', 'g', 'u', 'd', 'k']);
     function key(e: KeyboardEvent) {
       const pressed = e.key.toLowerCase();
       if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); exitPreview(); return; }
@@ -182,34 +235,28 @@ export default function Editor() {
   async function toggleFullscreen() { try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen(); } catch { notify('Full screen is unavailable in this browser window.'); } }
   async function cut(start: Point, end: Point) {
     const frame = actions.selectedElements.length === 1 ? actions.selectedElements[0] : undefined;
-    if (!frame || frame.type !== 'frame' || frame.photo || frame.geometry.paths) return notify('Select one empty non-union frame before using the cutter.');
+    if (!frame || frame.type !== 'frame' || frame.locked || frame.photo || frame.geometry.paths) return notify(frame?.type === 'frame' && frame.locked ? 'Unlock this frame before cutting it.' : 'Select one empty non-union frame before using the cutter.');
     if (busyCut) return; setBusyCut(true); const originalPage = page.id, originalFrame = JSON.stringify(frame);
     try {
-      const response = await fetch('/api/geometry/cut', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ frame, start, end, gap: cutGap }) }); const result = await response.json() as { error?: string; pieces: FrameElement[] };
-      if (!response.ok) throw new Error(result.error || 'The cutter is unavailable.');
+      const result = executeLocalCut(frame, start, end, cutGap);
       const active = current.current.pages.find(p => p.id === originalPage), existing = active?.elements.find(e => e.id === frame.id);
       if (JSON.stringify(existing) !== originalFrame) throw new Error('The frame changed while cutting. Please try again.');
-      const operationId = uid(), linked = linkCutPieces(frame, start, end, cutGap, result.pieces as [FrameElement, FrameElement], operationId), pieces = linked.map(piece => ({ ...piece, id: uid() }));
+      const operationId = uid(), linked = linkCutPieces(frame, start, end, cutGap, result, operationId), pieces = linked.map(piece => ({ ...piece, id: uid() }));
       apply(doc => ({ ...doc, pages: doc.pages.map(p => p.id === originalPage ? { ...p, elements: p.elements.flatMap<AlbumElement>(element => element.id === frame.id ? pieces : [element]) } : p) })); setSelected(pieces.map(p => p.id)); setTool('select');
     } catch (e) { report(e); } finally { setBusyCut(false); }
   }
   function halfCut(direction: 'horizontal' | 'vertical') {
     const frame = actions.selectedElements.length === 1 ? actions.selectedElements[0] : undefined;
-    if (!frame || frame.type !== 'frame' || frame.photo || frame.geometry.paths) return notify('Select one empty non-union frame to cut it in half.');
+    if (!frame || frame.type !== 'frame' || frame.locked || frame.photo || frame.geometry.paths) return notify(frame?.type === 'frame' && frame.locked ? 'Unlock this frame before cutting it.' : 'Select one empty non-union frame to cut it in half.');
     const [start, end] = halfCutLine(frame, direction); void cut(start, end);
   }
   async function divide(direction: DivisionDirection, count: number) {
     const frame = actions.selectedElements.length === 1 ? actions.selectedElements[0] : undefined;
-    if (!frame || frame.type !== 'frame' || frame.photo || frame.geometry.paths) return notify('Select one empty non-union frame before using Division.');
+    if (!frame || frame.type !== 'frame' || frame.locked || frame.photo || frame.geometry.paths) return notify(frame?.type === 'frame' && frame.locked ? 'Unlock this frame before dividing it.' : 'Select one empty non-union frame before using Division.');
     if (busyCut) return;
     setBusyCut(true); const originalPage = page.id, originalFrame = JSON.stringify(frame);
     try {
-      const pieces = await divideFrame(frame, count, direction, cutGap, async (source, start, end, gap) => {
-        const response = await fetch('/api/geometry/cut', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ frame: source, start, end, gap }) });
-        const result = await response.json() as { error?: string; pieces?: FrameElement[] };
-        if (!response.ok || !result.pieces || result.pieces.length !== 2) throw new Error(result.error || 'Division could not cut this frame.');
-        return result.pieces as [FrameElement, FrameElement];
-      }, uid);
+      const pieces = await divideFrame(frame, count, direction, cutGap, executeLocalCut, uid);
       const active = current.current.pages.find(item => item.id === originalPage), existing = active?.elements.find(element => element.id === frame.id);
       if (JSON.stringify(existing) !== originalFrame) throw new Error('The frame changed while dividing. Please try again.');
       apply(doc => ({ ...doc, pages: doc.pages.map(item => item.id === originalPage ? { ...item, elements: item.elements.flatMap<AlbumElement>(element => element.id === frame.id ? pieces : [element]) } : item) }));
@@ -219,16 +266,12 @@ export default function Editor() {
   }
   async function magicSpace(gap: number) {
     const frames = page.elements.filter((element): element is FrameElement => element.type === 'frame'), selection = analyzeCutSelection(frames, selected);
+    if (frames.some(frame => frame.locked && selected.includes(frame.id))) return notify('Unlock the selected frames before changing their spacing.');
     if (!selection.valid) return notify(selection.reason);
     if (busySpacer) return;
     setBusySpacer(true); const originalPage = page.id, originals = selection.mode === 'history' ? selection.trees.flatMap(tree => tree.frames) : selection.layouts.flatMap(layout => layout.frames), invalidatedRoots = new Set(selection.mode === 'geometry' ? originals.flatMap(frame => cutPath(frame) ? [cutPath(frame)![0].operationId] : []) : []);
     try {
-      const updateMaps = selection.mode === 'history' ? await Promise.all(selection.trees.map(tree => recutCutTree(tree, gap, async (frame, start, end, nextGap) => {
-        const response = await fetch('/api/geometry/cut', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ frame, start, end, gap: nextGap }) });
-        const result = await response.json() as { error?: string; pieces?: FrameElement[] };
-        if (!response.ok || !result.pieces || result.pieces.length !== 2) throw new Error(result.error || 'Spacer could not recalculate this cut.');
-        return result.pieces as [FrameElement, FrameElement];
-      }))) : selection.layouts.map(layout => resizeGeometricLayout(layout, gap, frame => frame.photo ? libraryRef.current.get(frame.photo.assetId)?.ref : undefined));
+      const updateMaps = selection.mode === 'history' ? await Promise.all(selection.trees.map(tree => recutCutTree(tree, gap, executeLocalCut))) : selection.layouts.map(layout => resizeGeometricLayout(layout, gap, frame => frame.photo ? libraryRef.current.get(frame.photo.assetId)?.ref : undefined));
       const active = current.current.pages.find(item => item.id === originalPage);
       if (!active || originals.some(original => JSON.stringify(active.elements.find(element => element.id === original.id)) !== JSON.stringify(original))) throw new Error('A selected frame changed while spacing. Please try again.');
       const updates = new Map<string, FrameElement>(); updateMaps.forEach(map => map.forEach((frame, id) => updates.set(id, frame)));
@@ -238,8 +281,62 @@ export default function Editor() {
     } catch (error) { report(error); } finally { setBusySpacer(false); }
   }
   function saveProject() { setMenu(null); setSaveWarningOpen(true); }
-  function downloadProject() { download(new Blob([JSON.stringify(current.current, null, 2)], { type: 'application/json' }), `${safeName(current.current.name)}.can`); setSaveWarningOpen(false); }
-  async function openProject(file?: File) { if (!file) return; try { const p = parseProject(await readJson(file)); setConfirm({ title: 'Open this album?', message: 'This replaces the current album. Save your current project first if you want to keep a separate copy.', action: () => { history.replace(p); selectPage(p.pages[0].id); notify('Album opened. Reopen the photo folder if any photos are missing.'); } }); } catch (e) { report(e); } finally { if (projectInput.current) projectInput.current.value = ''; } }
+  function downloadProject() {
+    try {
+      const snapshot = current.current;
+      download(new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' }), `${safeName(snapshot.name)}.can`);
+      fileSave.record(snapshot, current.current, '.can', 'downloaded'); setSaveWarningOpen(false);
+      notify('Project download started. Keep the .can file from your browser downloads; photos are not included.');
+    } catch (error) { report(error); }
+  }
+  async function saveProjectWithPhotos() {
+    setMenu(null);
+    try {
+      if (!window.showSaveFilePicker) throw new Error('Save with photos requires Chrome or Edge file access.');
+      const snapshot = structuredClone(current.current), prepared = prepareProjectPackage(snapshot, libraryRef.current);
+      const handle = await window.showSaveFilePicker({ suggestedName: `${safeName(snapshot.name)}.canpack`, types: [{ description: 'CustomAlboom project with photos', accept: { 'application/zip': ['.canpack'] } }] });
+      const stream = await handle.createWritable(), controller = new AbortController(); packageAbort.current = controller;
+      setPackageTransfer({ kind: 'saving', completed: 0, total: prepared.photos.length + 2, bytesDone: 0, bytesTotal: prepared.bytesTotal });
+      await writeProjectPackage(snapshot, libraryRef.current, { write: chunk => stream.write(chunk), close: () => stream.close(), abort: reason => stream.abort(reason) }, { signal: controller.signal, onProgress: progress => setPackageTransfer({ kind: 'saving', ...progress }) });
+      fileSave.record(snapshot, current.current, '.canpack', 'saved');
+      notify(`Project saved with ${prepared.photos.length} used photo${prepared.photos.length === 1 ? '' : 's'}.`);
+    } catch (error) { report(error); }
+    finally { packageAbort.current = null; setPackageTransfer(null); }
+  }
+  async function loadProjectPackage(opened: OpenedProjectPackage) {
+    const controller = new AbortController(), nextLibrary: PhotoLibrary = new Map(), bytesTotal = opened.photos.reduce((sum, photo) => sum + photo.file.size, 0); let bytesDone = 0;
+    packageAbort.current = controller; setPackageTransfer({ kind: 'opening', completed: 0, total: opened.photos.length, bytesDone: 0, bytesTotal });
+    let reader: PhotoReader | undefined;
+    try {
+      if (opened.photos.length) { reader = new PhotoReader(); controller.signal.addEventListener('abort', () => reader?.dispose(), { once: true }); }
+      for (let index = 0; index < opened.photos.length; index++) {
+        if (controller.signal.aborted) throw controller.signal.reason ?? new DOMException('The operation was cancelled.', 'AbortError');
+        const packaged = opened.photos[index], photo = await reader!.read(packaged.file, packaged.asset.entry, packaged.asset.id);
+        nextLibrary.set(photo.ref.id, photo); bytesDone += packaged.file.size;
+        setPackageTransfer({ kind: 'opening', completed: index + 1, total: opened.photos.length, bytesDone, bytesTotal });
+      }
+      history.replace(opened.project); selectPage(opened.project.pages[0].id); replaceEmbeddedLibrary(nextLibrary);
+      fileSave.record(opened.project, opened.project, '.canpack', 'opened');
+      notify(`Portable project opened with ${opened.photos.length} embedded photo${opened.photos.length === 1 ? '' : 's'}.`);
+    } catch (error) { nextLibrary.forEach(photo => URL.revokeObjectURL(photo.previewUrl)); if (!controller.signal.aborted) report(error); }
+    finally { reader?.dispose(); packageAbort.current = null; setPackageTransfer(null); }
+  }
+  async function openProject(file?: File) {
+    if (!file) return;
+    try {
+      if (file.name.toLowerCase().endsWith('.canpack')) {
+        const controller = new AbortController(); packageAbort.current = controller; setPackageTransfer({ kind: 'opening', completed: 0, total: 1, bytesDone: 0, bytesTotal: 0 });
+        let opened: OpenedProjectPackage;
+        try { opened = await readProjectPackage(file, { signal: controller.signal, onProgress: progress => setPackageTransfer({ kind: 'opening', ...progress }) }); }
+        finally { packageAbort.current = null; setPackageTransfer(null); }
+        setConfirm({ title: 'Open this portable album?', message: `This replaces the current album and loads ${opened.photos.length} embedded photo${opened.photos.length === 1 ? '' : 's'}. Save your current project first if you want to keep a separate copy.`, action: () => void loadProjectPackage(opened) });
+      } else {
+        const p = parseProject(await readJson(file));
+        setConfirm({ title: 'Open this album?', message: 'This replaces the current album. Save your current project first if you want to keep a separate copy.', action: () => { replaceEmbeddedLibrary(new Map()); history.replace(p); fileSave.record(p, p, '.can', 'opened'); selectPage(p.pages[0].id); notify('Album opened. Reopen the photo folder if any photos are missing.'); } });
+      }
+    } catch (e) { report(e); }
+    finally { if (projectInput.current) projectInput.current.value = ''; }
+  }
   async function chooseTemplateFolder() { try { const directory = await chooseDirectory('readwrite'); setTemplateFolder(directory); await storeValue('templateFolder', directory); const loaded = await loadTemplates(directory); setTemplates(loaded.templates); setTemplateTab('saved'); if (loaded.errors.length) notify(`${loaded.errors.length} invalid template file(s) were skipped.`); } catch (e) { report(e); } }
   const loadOnlineTemplates = useCallback(async () => {
     setOnlineStatus('loading');
@@ -260,11 +357,11 @@ export default function Editor() {
   }
   function applyTemplate(t: LayoutTemplate) {
     if (t.kind === 'album-template') {
-      const action = () => { const next = structuredClone(t.page); next.id = page.id; next.elements.forEach(e => e.id = uid()); actions.updatePage(() => next); setSelected([]); setLayoutOpen(false); notify(`“${t.name}” applied. Drag photos into the frames or use Auto-fill.`); };
+      const action = () => { let next = structuredClone(t.page); next.id = page.id; next.elements.forEach(e => e.id = uid()); next = setPageFramesLocked(next, project.framesLocked); actions.updatePage(() => next); setSelected([]); setLayoutOpen(false); notify(`“${t.name}” applied. Drag photos into the frames or use Auto-fill.`); };
       if (page.elements.length || page.backgroundPhoto) setConfirm({ title: 'Apply this layout?', message: 'This replaces the current page layout and its photos, using the template’s size and page mode. You can undo this change.', action }); else action();
       return;
     }
-    const action = () => { const pages = structuredClone(t.pages).map(item => ({ ...item, id: uid(), elements: item.elements.map(element => ({ ...element, id: uid() })) })); apply(doc => ({ ...doc, pages })); setPageId(pages[0].id); setSelected([]); setLayoutOpen(false); notify(`“${t.name}” applied as ${pages.length} pages. Drag photos into the frames or use Auto-fill.`); };
+    const action = () => { const pages = structuredClone(t.pages).map(item => ({ ...item, id: uid(), elements: item.elements.map(element => ({ ...element, id: uid(), ...(element.type === 'frame' ? { locked: project.framesLocked } : {}) })) })); apply(doc => ({ ...doc, pages })); setPageId(pages[0].id); setSelected([]); setLayoutOpen(false); notify(`“${t.name}” applied as ${pages.length} pages. Drag photos into the frames or use Auto-fill.`); };
     const hasContent = project.pages.some(item => item.elements.length || item.backgroundPhoto);
     if (hasContent || project.pages.length > 1) setConfirm({ title: 'Apply all page layouts?', message: `This replaces all ${project.pages.length} current pages with the ${t.pages.length}-page template. Photos placed on the current pages will be removed. You can undo this change once.`, action }); else action();
   }
@@ -278,7 +375,7 @@ export default function Editor() {
     finally { setLoadingOnlineId(''); }
   }
   function addOnlinePages(source: Page[], templateName: string) {
-    const pages = structuredClone(source).map(item => ({ ...item, id: uid(), elements: item.elements.map(element => ({ ...element, id: uid() })) }));
+    const pages = structuredClone(source).map(item => ({ ...item, id: uid(), elements: item.elements.map(element => ({ ...element, id: uid(), ...(element.type === 'frame' ? { locked: project.framesLocked } : {}) })) }));
     apply(document => {
       const active = document.pages.findIndex(item => item.id === page.id), insertion = active < 0 ? document.pages.length : active + 1;
       return { ...document, pages: [...document.pages.slice(0, insertion), ...pages, ...document.pages.slice(insertion)] };
@@ -289,7 +386,7 @@ export default function Editor() {
   async function startExport(kind: ExportKind) { setMenu(null); const controller = new AbortController(); abortExport.current = controller; setExporting({ kind, done: 0, total: kind === 'jpg' ? 1 : project.pages.length }); try { const { exportAlbum } = await import('../io/export'); await exportAlbum(structuredClone(project), structuredClone(page), library, kind, controller.signal, (done, total) => setExporting({ kind, done, total })); notify('Your export is ready.'); } catch (e) { report(e); } finally { setExporting(null); abortExport.current = null; } }
   function deletePage(id: string) { if (project.pages.length <= 1) return; setConfirm({ title: 'Remove this page?', message: 'Its layout will be removed from the album. You can restore it with Undo.', action: () => { apply(doc => ({ ...doc, pages: doc.pages.filter(p => p.id !== id) })); if (id === page.id) selectPage(project.pages.find(p => p.id !== id)!.id); } }); }
   const missing = project.assets.filter(a => usage.has(a.id) && !library.has(a.id)).length;
-  const folderManagerBusy = !!(photoDraft || importing || exporting);
+  const folderManagerBusy = !!(photoDraft || importing || exporting || packageTransfer);
   const layouts = useMemo(() => builtinLayouts(page), [page.baseWidth, page.height, page.mode, page.padding]);
   const filteredOnlineTemplates = useMemo(() => {
     const query = onlineQuery.trim().toLocaleLowerCase();
@@ -300,15 +397,16 @@ export default function Editor() {
   return <main className={`editor theme-${theme}${previewMode ? ' preview-mode' : ''}${photoDraft ? ' photo-edit-mode' : ''}`} onContextMenu={event => event.preventDefault()}>
     <header className="app-header"><div className="brand brand-simple"><img className="brand-logo" src="/customalboom-logo.png" alt="" width={32} height={32}/><span>CustomAlboom.com</span></div><CoffeeSupportButton onClick={() => setCoffeeOpen(true)}/>
       <div className="document-title"><input aria-label="Album name" value={project.name} maxLength={120} onChange={e => apply(p => ({ ...p, name: e.target.value || 'Untitled album' }))}/><span><i/>{saveStatus}</span></div>
-      <div className="header-actions"><button title={isFullscreen ? 'Exit full screen (Ctrl + F or `)' : 'Enter full screen (Ctrl + F or `)'} className="header-button fullscreen-button" onClick={toggleFullscreen}>{isFullscreen ? <Minimize2 size={15}/> : <Maximize2 size={15}/>} {isFullscreen ? 'Exit Full Screen' : 'Full Screen'}</button><button title={theme === 'light' ? 'Switch to Gray mode' : 'Switch to Light mode'} className="icon-button" onClick={() => setTheme(t => t === 'light' ? 'gray' : 'light')}>{theme === 'light' ? <Moon size={17}/> : <Sun size={17}/>}</button><button title="Editor help" className="icon-button" onClick={() => setHelpOpen(true)}><CircleHelp size={17}/></button><span className="separator"/><div className="menu-wrap"><button className="header-button" onClick={() => setMenu(menu === 'file' ? null : 'file')}><FolderOpen size={15}/> File <ChevronDown size={13}/></button>{menu === 'file' && <div className="dropdown"><button onClick={saveProject}><Save size={15}/>Save project <kbd>Ctrl S</kbd></button><button onClick={() => { projectInput.current?.click(); setMenu(null); }}><FolderOpen size={15}/>Open project</button><button onClick={() => { setMenu(null); setConfirm({ title: 'Start a new album?', message: 'Save your current album as a project file before starting fresh.', action: () => { const p = makeProject(); history.replace(p); selectPage(p.pages[0].id); } }); }}><FilePlus2 size={15}/>New album</button></div>}</div>
+      <div className="header-actions"><button title={isFullscreen ? 'Exit full screen (Ctrl + F or `)' : 'Enter full screen (Ctrl + F or `)'} className="header-button fullscreen-button" onClick={toggleFullscreen}>{isFullscreen ? <Minimize2 size={15}/> : <Maximize2 size={15}/>} {isFullscreen ? 'Exit Full Screen' : 'Full Screen'}</button><button title={theme === 'light' ? 'Switch to Gray mode' : 'Switch to Light mode'} className="icon-button" onClick={() => setTheme(t => t === 'light' ? 'gray' : 'light')}>{theme === 'light' ? <Moon size={17}/> : <Sun size={17}/>}</button><button title="Editor help" className="icon-button" onClick={() => setHelpOpen(true)}><CircleHelp size={17}/></button><span className="separator"/><div className="menu-wrap"><button className="header-button" onClick={() => setMenu(menu === 'file' ? null : 'file')}><FolderOpen size={15}/> File <ChevronDown size={13}/></button>{menu === 'file' && <div className="dropdown"><button onClick={saveProject}><Save size={15}/><span>Save project<small>Layout only · small .can file</small></span><kbd>Ctrl S</kbd></button><button onClick={() => void saveProjectWithPhotos()}><FileArchive size={15}/><span>Save project with photos<small>Used originals · portable .canpack</small></span></button><button onClick={() => { projectInput.current?.click(); setMenu(null); }}><FolderOpen size={15}/>Open project</button><button onClick={() => { setMenu(null); setConfirm({ title: 'Start a new album?', message: 'Save your current album as a project file before starting fresh.', action: () => { const p = makeProject(); replaceEmbeddedLibrary(new Map()); history.replace(p); fileSave.reset(p); selectPage(p.pages[0].id); } }); }}><FilePlus2 size={15}/>New album</button></div>}</div>
       <div className="menu-wrap"><button className="primary export-button" onClick={() => setMenu(menu === 'export' ? null : 'export')}><ArrowDownToLine size={15}/> Export <ChevronDown size={13}/></button>{menu === 'export' && <div className="dropdown export-menu"><button className="coffee-export-banner" onClick={() => { setMenu(null); setCoffeeOpen(true); }}><span><strong>Belanjalah saya<br/>kopi plzzz..</strong></span><img src="/coffee-cat-wink.png" alt=""/></button><button onClick={() => startExport('jpg')}><FileImage size={17}/><span>Current page JPG<small>{page.dpi} DPI · high quality</small></span></button><button onClick={() => startExport('zip')}><Grid2X2 size={17}/><span>All pages as JPG<small>Numbered images in a ZIP</small></span></button><button onClick={() => startExport('pdf')}><FileText size={17}/><span>Album PDF<small>Original page sizes</small></span></button></div>}</div></div>
     </header>
-    <div className="workspace-toolbar"><div className="canvas-toolbar"><div className="history-buttons"><button title="Undo (Ctrl Z)" disabled={!history.canUndo} onClick={history.undo}><Undo2 size={16}/></button><button title="Redo (Ctrl Shift Z)" disabled={!history.canRedo} onClick={history.redo}><Redo2 size={16}/></button><span className="separator"/><span className="page-dimensions">{formatMeasure(page.height, project.unit)} × {formatMeasure(pageWidth(page), project.unit)} {project.unit}<small>{page.mode === 'spread' ? 'SPREAD' : 'SINGLE'}</small></span><button className="preview-button" title="Toggle Preview (Ctrl + P)" onClick={enterPreview}><Eye size={14}/> Preview</button>{page.mode === 'spread' && <button className="flip-side-button" title="Mirror layout positions across the spread without flipping photos" onClick={actions.flipSide}><ArrowLeftRight size={14}/> Flip Side</button>}</div><div className="layout-actions"><button className="text-button" onClick={() => { setTemplateName(''); setSaveTemplateScope(null); setSaveTemplateOpen(true); }}><Save size={14}/> Save layout</button><button className="layout-button" onClick={() => setLayoutOpen(true)}><LayoutGrid size={15}/> Layouts <span>{layouts.length + templates.length}</span></button><PrintShopButton onClick={() => setPrintShopsOpen(true)}/></div></div><div className="page-count">{project.pages.length} {project.pages.length === 1 ? 'page' : 'pages'}</div></div>
-    <div className="editor-body"><LeftPanel tab={leftPanelTab} onTab={setLeftPanelTab} photoPanel={photoDraft?.photo && library.get(photoDraft.photo.assetId) ? <PhotoAdjustmentsPanel frame={photoDraft} asset={library.get(photoDraft.photo.assetId)!} onChange={setPhotoDraft} compare={comparePhoto} onCompare={setComparePhoto} onFinish={finishPhotoEdit}/> : undefined} page={page} unit={project.unit} setUnit={unit => apply(p => ({ ...p, unit }))} selected={actions.selectedElements} onAdd={kind => { actions.addElement(kind); setTool('select'); setLeftPanelTab('build'); }} onPage={requestPageSettings} onElement={actions.updateElement} onDelete={actions.deleteElements} onAlign={actions.align} onLayer={actions.layer} onMode={showMode} onBackground={() => { setBackgroundMode(true); if (!visiblePhotoIds.size) setFolderManagerOpen(true); else notify('Click a photo in the tray to use as the background.'); }} cutGap={cutGap} setCutGap={setCutGap} tool={tool} onCut={toggleCutterMode}/>
+    {!previewMode && <FileSaveStatus state={fileSave.state} reminder={fileSave.reminder} busy={!!(packageTransfer || exporting || photoDraft)} onSave={saveProject} onLater={fileSave.snooze}/>}
+    <div className="workspace-toolbar"><div className="canvas-toolbar"><div className="history-buttons"><button title="Undo (Ctrl Z)" disabled={!history.canUndo} onClick={history.undo}><Undo2 size={16}/></button><button title="Redo (Ctrl Shift Z)" disabled={!history.canRedo} onClick={history.redo}><Redo2 size={16}/></button><span className="separator"/><span className="page-dimensions">{formatMeasure(page.height, project.unit)} × {formatMeasure(pageWidth(page), project.unit)} {project.unit}<small>{page.mode === 'spread' ? 'SPREAD' : 'SINGLE'}</small></span><button className="preview-button" title="Toggle Preview (Ctrl + P)" onClick={enterPreview}><Eye size={14}/> Preview</button>{page.mode === 'spread' && <button className="flip-side-button" title="Mirror layout positions across the spread without flipping photos" onClick={actions.flipSide}><ArrowLeftRight size={14}/> Flip Side</button>}<button className={`frame-lock-button${project.framesLocked ? ' active' : ''}`} title={project.framesLocked ? 'Allow every frame in this album to move and resize (I)' : 'Prevent every frame in this album, including new frames, from moving or resizing (I)'} aria-pressed={project.framesLocked} onClick={actions.toggleFrameLock}>{project.framesLocked ? <LockOpen size={14}/> : <Lock size={14}/>} {project.framesLocked ? 'Unlock Frame' : 'Lock Frame'}</button></div><div className="layout-actions"><button className="text-button" onClick={() => { setTemplateName(''); setSaveTemplateScope(null); setSaveTemplateOpen(true); }}><Save size={14}/> Save layout</button><button className="layout-button" onClick={() => setLayoutOpen(true)}><LayoutGrid size={15}/> Layouts</button><PrintShopButton onClick={() => setPrintShopsOpen(true)}/></div></div><div className="page-count">{project.pages.length} {project.pages.length === 1 ? 'page' : 'pages'}</div></div>
+    <div className="editor-body"><LeftPanel tab={leftPanelTab} onTab={setLeftPanelTab} photoPanel={photoDraft?.photo && library.get(photoDraft.photo.assetId) ? <PhotoAdjustmentsPanel frame={photoDraft} asset={library.get(photoDraft.photo.assetId)!} onChange={setPhotoDraft} compare={comparePhoto} onCompare={setComparePhoto} onFinish={finishPhotoEdit}/> : undefined} page={page} unit={project.unit} setUnit={unit => apply(p => ({ ...p, unit }))} selected={actions.selectedElements} fonts={typefaces} onAdd={kind => { actions.addElement(kind); setTool('select'); setLeftPanelTab('build'); }} onPage={requestPageSettings} onElement={actions.updateElement} onDelete={actions.deleteElements} onAlign={actions.align} onLayer={actions.layer} onMode={showMode} onBackground={() => { setBackgroundMode(true); if (!visiblePhotoIds.size) setFolderManagerOpen(true); else notify('Click a photo in the tray to use as the background.'); }} onFastKeys={() => setHelpOpen(true)}/>
       <div className="center-workspace">{previewMode && <div className="preview-controls"><button autoFocus className="preview-exit" onClick={exitPreview}><X size={15}/> Exit Preview</button><button aria-label="Previous preview page" className="preview-nav preview-nav-left" disabled={previewIndex <= 0} onClick={() => movePreview(-1)}><ChevronLeft size={24}/></button><button aria-label="Next preview page" className="preview-nav preview-nav-right" disabled={previewIndex >= project.pages.length - 1} onClick={() => movePreview(1)}><ChevronRight size={24}/></button><span className="preview-counter" aria-live="polite">Page {previewIndex + 1} of {project.pages.length}</span></div>}{missing > 0 && <div className="missing-banner"><span>{missing} used photo{missing === 1 ? '' : 's'} need reconnecting.</span><button onClick={() => setFolderManagerOpen(true)}>Manage folders</button></div>}<Canvas photoDraft={photoDraft} onPhotoDraft={setPhotoDraft} onPhotoEdit={beginPhotoEdit} onPhotoDone={() => finishPhotoEdit(true)} comparePhoto={comparePhoto} preview={previewMode} page={previewMode ? previewPage : page} library={library} allowDuplicates={project.allowDuplicates} unit={project.unit} selected={previewMode ? [] : selected} onSelect={ids => { setSelected(ids); if (ids.length) setLeftPanelTab('build'); }} onChange={actions.setElements} onDrop={actions.assignPhoto} onCut={cut} onHalfCut={halfCut} onDivide={divide} divisionBusy={busyCut} onCutGap={setCutGap} onMagicSpace={magicSpace} magicBusy={busySpacer} onFlip={actions.flip} duplicateGap={duplicateGap} onDuplicateGap={setDuplicateGap} duplicateDirection={duplicateDirection} onDuplicateDirection={setDuplicateDirection} cutGap={cutGap} tool={tool} setTool={setTool} onLayout={() => setLayoutOpen(true)} onFrame={() => { actions.addElement('rect'); setLeftPanelTab('build'); }} notify={notify}/><PhotosPanel project={project} library={library} visiblePhotoIds={visiblePhotoIds} folderCount={photoFolders.length} usage={usage} importing={importing} onManageFolders={() => setFolderManagerOpen(true)} onAutoFill={ids => actions.autoFill(ids, [...visiblePhotoIds])} onDuplicate={allowDuplicates => apply(p => ({ ...p, allowDuplicates }))} onPhoto={(id, additive) => { if (additive) { setSelectedPhotos(ids => ids.includes(id) ? ids.filter(item => item !== id) : [...ids, id]); return; } setSelectedPhotos([id]); const target = actions.selectedElements.find(element => element.type === 'frame'); if (backgroundMode || target) { actions.assignPhoto(id, target?.id, backgroundMode); if (backgroundMode) setBackgroundMode(false); } }} selectedPhotos={selectedPhotos} backgroundMode={backgroundMode}/></div>
       <PagesPanel project={project} current={page.id} library={library} version={library.size} onSelect={selectPage} onAdd={() => selectPage(actions.addPage())} onDuplicate={id => selectPage(actions.duplicatePage(id))} onDelete={deletePage} onMove={actions.movePage} onReorder={actions.reorderPage}/>
     </div>
-    <input ref={projectInput} type="file" accept=".can,.json,.album-project.json" hidden onChange={e => void openProject(e.target.files?.[0])}/>
+    <input ref={projectInput} type="file" accept=".canpack,.can,.json,.album-project.json" hidden onChange={e => void openProject(e.target.files?.[0])}/>
     {menu && <div className="menu-dismiss" onClick={() => setMenu(null)}/>}
     {toast && <div className="toast" role="status"><Check size={16}/><span>{toast}</span><button aria-label="Dismiss message" onClick={() => setToast('')}><X size={14}/></button></div>}
     {layoutOpen && <Modal title={onlineDrilldown ? onlineDrilldown.summary.title : "A starting point for every story."} onClose={() => { setOnlineDrilldown(null); setLayoutOpen(false); }} wide>
@@ -325,14 +423,15 @@ export default function Editor() {
     </Modal>}
     {coffeeOpen && <CoffeeSupportModal onClose={() => setCoffeeOpen(false)} notify={notify}/>}
     {printShopsOpen && <PrintShopModal onClose={() => setPrintShopsOpen(false)}/>}
-    {saveWarningOpen && <Modal title="Before you save this project." onClose={() => setSaveWarningOpen(false)}><p className="modal-description project-save-explanation">This project file does not include:</p><ul className="project-save-exclusions"><li>Your original photo files</li><li>Photo folder links and browser permissions</li></ul><p className="modal-description project-save-note">When this project is opened on another computer or browser, its pages and layout will remain complete. Add or reconnect the original photo folders before the photos can be displayed or exported.</p><div className="modal-actions"><button onClick={() => setSaveWarningOpen(false)}>Cancel</button><button className="primary" onClick={downloadProject}>Yes, I Understand</button></div></Modal>}
+    {saveWarningOpen && <Modal title="Before you save this project." onClose={() => setSaveWarningOpen(false)}><p className="modal-description project-save-explanation">This small .can project file does not include:</p><ul className="project-save-exclusions"><li>Your original photo files</li><li>Photo folder links and browser permissions</li></ul><p className="modal-description project-save-note">Its pages and layout remain complete, but the original folders must be reconnected before photos can be displayed or exported. Choose “Save project with photos” from the File menu when you need one portable .canpack.</p><div className="modal-actions"><button onClick={() => setSaveWarningOpen(false)}>Cancel</button><button className="primary" onClick={downloadProject}>Save small .can</button></div></Modal>}
     {paddingWarning && <Modal title="Cut objects to the new padding?" onClose={() => setPaddingWarning(null)}><div className="padding-warning"><strong>{paddingWarning.frames + paddingWarning.texts} object{paddingWarning.frames + paddingWarning.texts === 1 ? '' : 's'} will be cut.</strong><p>The new inner padding overlaps {paddingWarning.frames} frame{paddingWarning.frames === 1 ? '' : 's'} and {paddingWarning.texts} text object{paddingWarning.texts === 1 ? '' : 's'}. Their overlapping areas will be permanently trimmed to fit inside the inner box without moving or stretching the photos.</p><p>Reducing the padding later will not restore the trimmed areas. You can use Undo immediately after applying this change.</p></div><div className="modal-actions"><button onClick={() => setPaddingWarning(null)}>Cancel</button><button className="primary" onClick={() => { const pending = paddingWarning.patch, next = clipPageToSafeArea({ ...page, ...pending, clipContentToPadding: false }); setPaddingWarning(null); actions.updatePage(() => next); setSelected(ids => ids.filter(id => next.elements.some(element => element.id === id))); }}>Cut &amp; Apply</button></div></Modal>}
     {folderManagerOpen && <PhotoFolderManagerModal folders={photoFolders} busy={folderManagerBusy} importingFolderId={importingFolderId} removal={folderRemoval} onClose={() => { setFolderRemoval(undefined); setFolderManagerOpen(false); }} onAdd={() => void addPhotoFolder()} onToggle={togglePhotoFolder} onRefresh={id => void importFolder(id)} onRequestRemove={requestFolderRemoval} onCancelRemove={() => setFolderRemoval(undefined)} onConfirmRemove={() => void confirmFolderRemoval()}/>}
     {saveTemplateOpen && <Modal title={saveTemplateScope ? 'Name this layout.' : 'What would you like to save?'} onClose={() => !savingTemplate && setSaveTemplateOpen(false)}>{!saveTemplateScope ? <><p className="modal-description">Choose whether this template should contain only the page you are viewing or the complete album layout. Photos are always excluded.</p><div className="save-layout-scope"><button onClick={() => setSaveTemplateScope('current')}><LayoutGrid size={22}/><span><strong>Current Layout</strong><small>Save only the current page.</small></span></button><button onClick={() => setSaveTemplateScope('all')}><BookOpen size={22}/><span><strong>All Pages Layout</strong><small>Bundle all {project.pages.length} pages in their current order.</small></span></button></div><div className="modal-actions"><button onClick={() => setSaveTemplateOpen(false)}>Cancel</button></div></> : <><p className="modal-description">{saveTemplateScope === 'current' ? 'The current page will be saved as one reusable layout.' : `All ${project.pages.length} pages will be saved together as one reusable album template.`} Photos and photo backgrounds are excluded.</p><label className="field"><span>Layout name</span><input autoFocus aria-label="Layout name" value={templateName} maxLength={100} placeholder={saveTemplateScope === 'current' ? 'e.g. Wedding — three moments' : 'e.g. Complete wedding album'} onChange={e => setTemplateName(e.target.value)}/></label><p className="hint">A reusable .lca template file will be downloaded by your browser.</p><div className="modal-actions"><button onClick={() => setSaveTemplateScope(null)} disabled={savingTemplate}>Back</button><button onClick={() => setSaveTemplateOpen(false)} disabled={savingTemplate}>Cancel</button><button className="primary" disabled={!templateName.trim() || savingTemplate} onClick={saveTemplate}>{savingTemplate ? <Loader2 className="spin" size={15}/> : <Save size={15}/>} Download template</button></div></>}</Modal>}
     {modeOpen && <Modal title={page.mode === 'single' ? 'Give your story more room.' : 'Choose the side to keep.'} eyebrow="CHANGE PAGE MODE" onClose={() => setModeOpen(false)}><p className="modal-description">{page.mode === 'single' ? 'Create a spread with twice the width. Move the existing layout without changing its size, or start with a blank canvas.' : 'Keep the left or right half as a single page. Objects crossing the boundary are clipped. This change can be undone.'}</p><div className="mode-choices">{(page.mode === 'single' ? ['blank', 'left', 'right'] : ['left', 'right']).map(choice => <button key={choice} className={modeChoice === choice ? 'active' : ''} onClick={() => setModeChoice(choice as 'blank' | 'left' | 'right')}>{choice === 'blank' ? 'Start blank' : `${page.mode === 'single' ? 'Move' : 'Keep'} ${choice}`}</button>)}</div><div className="mode-preview"><PagePreview page={convertPage(page, modeChoice)} library={library}/></div><div className="modal-actions"><button onClick={() => setModeOpen(false)}>Cancel</button><button className="primary" onClick={() => { actions.updatePage(() => convertPage(page, modeChoice)); setSelected([]); setModeOpen(false); }}>Apply change</button></div></Modal>}
-    {helpOpen && <Modal title="App Fast Keys" onClose={() => setHelpOpen(false)} wide><div className="help-list">{[['Ctrl + M', 'Show or hide this shortcut guide.'], ['Ctrl + F / `', 'Enter or exit full screen.'], ['Ctrl + P', 'Enter or exit Preview without opening browser print.'], ['Ctrl + D', 'Duplicate the selection using the active arrow and spacing value.'], ['S', 'Add a rectangle frame to the current page.'], ['F4', 'Fit the current page inside the canvas.'], ['Page Up / Page Down', 'Go to the previous / next album page.'], ['Ctrl + ↑ / Ctrl + ↓', 'Go to the previous / next album page.'], ['Ctrl + K', 'Merge touching or overlapping empty frames into one Union Shape.'], ['Ctrl + G', 'Group selected frames.'], ['Ctrl + U', 'Ungroup the selected frame group.'], ['E', 'Fill one selected rectangle across its page side and center it.'], ['O', 'Remove photos from the selected frame or frames.'], ['C', 'Start or exit the free-angle cutter for one selected empty frame.'], ['D', 'Start or exit the 50/50 cutter for one selected empty frame.'], ['T', 'Align selected objects to the top.'], ['B', 'Align selected objects to the bottom.'], ['F', 'Align selected objects to the horizontal center.'], ['L / R', 'Align selected objects to the left / right.'], ['P', 'Center selected objects horizontally and vertically on the page.'], ['V', 'Center selected objects vertically.'], ['Z / X', 'Center on the left / right side of a spread; both center on a single page.'], ['1 / 2', 'Distribute selected objects horizontally / vertically.'], ['Drag empty space', 'Draw a selection box around frames and text. Add Shift to toggle items in the current selection.'], ['Alt + drag', 'Duplicate a frame or text object. Add Shift for a straight path.'], ['Double-click', 'Reposition and zoom a photo inside its frame.'], ['Shift + resize', 'Resize proportionally.'], ['Shift + drag', 'Move horizontally or vertically.'], ['Shift + click', 'Select several frames or text objects.'], ['Shift + click photo', 'Select several tray photos for Auto-fill.'], ['Space + drag', 'Pan around the canvas.'], ['Ctrl + scroll', 'Zoom in and out.'], ['Ctrl + Z', 'Undo. Ctrl + Shift + Z to redo.'], ['Ctrl + S', 'Save an album project to your computer.'], ['Delete', 'Remove selected objects.']].map(([key, desc]) => <p key={key}><kbd>{key}</kbd><span>{desc}</span></p>)}</div><p className="modal-footnote">Projects reference your original photo files. Keep those files together and reconnect the folder when you reopen an album.</p></Modal>}
+    {helpOpen && <Modal title="App Fast Keys" onClose={() => setHelpOpen(false)} wide><div className="help-list">{[['Ctrl + M', 'Show or hide this shortcut guide.'], ['Ctrl + F / `', 'Enter or exit full screen.'], ['Ctrl + P', 'Enter or exit Preview without opening browser print.'], ['Ctrl + D', 'Duplicate the selection using the active arrow and spacing value.'], ['S', 'Add a rectangle frame to the current page.'], ['I', 'Lock or unlock every frame in the album.'], ['F4', 'Fit the current page inside the canvas.'], ['Page Up / Page Down', 'Go to the previous / next album page.'], ['Ctrl + ↑ / Ctrl + ↓', 'Go to the previous / next album page.'], ['Ctrl + K', 'Merge touching or overlapping empty frames into one Union Shape.'], ['Ctrl + G', 'Group selected frames.'], ['Ctrl + U', 'Ungroup the selected frame group.'], ['Q', 'Swap or cycle photos between the selected frames.'], ['E', 'Fill one selected rectangle across its page side and center it.'], ['O', 'Remove photos from the selected frame or frames.'], ['C', 'Start or exit the free-angle cutter for one selected empty frame.'], ['D', 'Start or exit the 50/50 cutter for one selected empty frame.'], ['T', 'Align selected objects to the top.'], ['B', 'Align selected objects to the bottom.'], ['F', 'Align selected objects to the horizontal center.'], ['L / R', 'Align selected objects to the left / right.'], ['P', 'Center selected objects horizontally and vertically on the page.'], ['V', 'Center selected objects vertically.'], ['Z / X', 'Center on the left / right side of a spread; both center on a single page.'], ['1 / 2', 'Distribute selected objects horizontally / vertically.'], ['Drag empty space', 'Draw a selection box around frames and text. Add Shift to toggle items in the current selection.'], ['Alt + drag', 'Duplicate a frame or text object. Add Shift for a straight path.'], ['Double-click', 'Reposition and zoom a photo inside its frame.'], ['Shift + resize', 'Resize proportionally.'], ['Shift + drag', 'Move horizontally or vertically.'], ['Shift + click', 'Select several frames or text objects.'], ['Shift + click photo', 'Select several tray photos for Auto-fill.'], ['Esc', 'Clear selected objects and Auto-fill photos, or cancel the active editor action.'], ['Space + drag', 'Pan around the canvas.'], ['Ctrl + scroll', 'Zoom in and out.'], ['Ctrl + Z', 'Undo. Ctrl + Shift + Z to redo.'], ['Ctrl + S', 'Save a small layout-only .can project.'], ['Delete', 'Remove selected objects.']].map(([key, desc]) => <p key={key}><kbd>{key}</kbd><span>{desc}</span></p>)}</div><p className="modal-footnote">Use File → Save project with photos to create a portable .canpack containing every original photo currently used on the album pages.</p></Modal>}
     {confirm && <Modal title={confirm.title} onClose={() => setConfirm(null)}><p className="modal-description">{confirm.message}</p><div className="modal-actions"><button onClick={() => setConfirm(null)}>Cancel</button><button className="primary" onClick={() => { const action = confirm.action; setConfirm(null); action(); }}>Continue</button></div></Modal>}
     {exporting && <Modal title="Preparing your album." eyebrow="EXPORTING ORIGINAL QUALITY" onClose={() => abortExport.current?.abort()}><p className="modal-description">Rendering page {Math.min(exporting.done + 1, exporting.total)} of {exporting.total}. Your original photos stay on this computer.</p><div className="progress-bar"><div style={{ width: `${exporting.done / exporting.total * 100}%` }}/></div><div className="modal-actions"><span className="hint">{exporting.done} / {exporting.total} complete</span><button onClick={() => abortExport.current?.abort()}>Cancel export</button></div></Modal>}
+    {packageTransfer && <Modal title={packageTransfer.kind === 'saving' ? 'Saving portable project.' : 'Opening portable project.'} eyebrow="PROJECT WITH ORIGINAL PHOTOS" onClose={() => packageAbort.current?.abort()}><p className="modal-description">{packageTransfer.kind === 'saving' ? 'Writing the project and its used photos directly to your .canpack file.' : 'Checking and preparing the embedded photos. The current album will stay unchanged until this completes.'}</p><div className="progress-bar"><div style={{ width: `${Math.min(100, packageTransfer.bytesTotal ? packageTransfer.bytesDone / packageTransfer.bytesTotal * 100 : packageTransfer.total ? packageTransfer.completed / packageTransfer.total * 100 : 100)}%` }}/></div><div className="modal-actions"><span className="hint">{packageTransfer.completed} / {packageTransfer.total} complete{packageTransfer.bytesTotal ? ` · ${(packageTransfer.bytesDone / 1_000_000).toFixed(1)} MB` : ''}</span><button onClick={() => packageAbort.current?.abort()}>Cancel</button></div></Modal>}
   </main>;
 }
 const COFFEE_MESSAGES = ['Belanja la saya kopi ^_^ plis.', 'Buy me a coffee please ^_^'], COFFEE_ACTIONS = ['Klik Sini', 'Click Here'];
@@ -360,10 +459,10 @@ function CoffeeSupportModal({ onClose, notify }: { onClose: () => void; notify: 
     try { await navigator.clipboard.writeText(value); setCopied(key); }
     catch { notify(malay ? 'Tidak dapat menyalin. Sila salin secara manual.' : 'Could not copy. Please copy it manually.'); }
   }
-  const title = malay ? settings.titleMs : settings.titleEn, message = malay ? settings.messageMs : settings.messageEn;
+  const title = malay ? settings.titleMs : settings.titleEn;
   return <Modal title={title} onClose={onClose} className="coffee-modal">
     <div className="coffee-language" role="tablist" aria-label="Language"><button role="tab" aria-selected={malay} className={malay ? 'active' : ''} onClick={() => setLanguage('ms')}>Melayu</button><span aria-hidden="true">/</span><button role="tab" aria-selected={!malay} className={!malay ? 'active' : ''} onClick={() => setLanguage('en')}>English</button></div>
-    <div className="coffee-message"><p style={{ whiteSpace: 'pre-line' }}>{message}</p></div>
+    <div className="coffee-message"><SupportMessage settings={settings} language={language}/></div>
     {!!settings.accounts.length && <div className="coffee-payment-grid" style={settings.accounts.length === 1 ? { gridTemplateColumns: '1fr' } : undefined}>{settings.accounts.map(account => { const copyField = account.fields.find(field => field.copy), online = /paypal|email|online/i.test(account.name); return <article className="coffee-payment-card" key={account.id}><div className="coffee-payment-heading"><span>{online ? <AtSign size={16}/> : <Landmark size={16}/>}</span><div><small>{malay ? 'KAEDAH BAYARAN' : 'PAYMENT METHOD'}</small><h3>{account.name}</h3></div></div><dl>{account.fields.map(field => <div key={field.id}><dt>{malay ? field.labelMs : field.labelEn}</dt><dd className={field.copy && /^[\d\s-]+$/.test(field.value) ? 'coffee-account-number' : undefined}>{field.value}</dd></div>)}</dl>{copyField && <button onClick={() => void copy(copyField.value, account.id)}>{copied === account.id ? <Check size={14}/> : <Copy size={14}/>} {copied === account.id ? (malay ? 'Disalin' : 'Copied') : `${malay ? 'Salin' : 'Copy'} ${malay ? copyField.labelMs : copyField.labelEn}`}</button>}</article>; })}</div>}
   </Modal>;
 }
@@ -375,7 +474,7 @@ function PrintShopButton({ onClick }: { onClick: () => void }) {
     schedule();
     return () => { active = false; clearTimeout(nextTimer); clearTimeout(offTimer); };
   }, []);
-  return <button type="button" className={`print-shop-button${shining ? ' shining' : ''}`} onClick={onClick}><Store size={14}/><span>Pilih Kedai Cetak Custom Album</span></button>;
+  return <button type="button" className={`print-shop-button${shining ? ' shining' : ''}`} onClick={onClick}><Store size={14}/><span>Pilih Kedai Cetak Album</span></button>;
 }
 function templatePages(template: LayoutTemplate) { return template.kind === 'album-template' ? [template.page] : template.pages; }
 const EMPTY_LIBRARY: PhotoLibrary = new Map();

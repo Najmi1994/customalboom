@@ -2,8 +2,10 @@
 import { useState } from 'react';
 import { PDFDocument } from 'pdf-lib';
 import { unzipSync, zipSync } from 'fflate';
-import { makeFrame, makePage, makeText, pageWidth, asTemplate } from '../src/domain/model';
+import { makeFrame, makePage, makeText, asTemplate } from '../src/domain/model';
 import { coverPhoto, convertPage } from '../src/domain/geometry';
+import { cutFrame, type CutExecutor } from '../src/domain/cutter';
+import { divideFrame } from '../src/domain/division';
 import { PhotoReader, PhotoLibrary } from '../src/io/photos';
 import { renderPage, canvasBlob } from '../src/render/scene';
 import { jpegDpi } from '../src/io/export';
@@ -15,6 +17,12 @@ export default function BrowserCheck() {
     const check = (ok: unknown, s: string) => { if (!ok) throw new Error(s); record('PASS · ' + s); };
     const reader = new PhotoReader();
     try {
+      const cutSource = makeFrame('rect', 0, 0, 400, 200), cutPieces = cutFrame({ frame: cutSource, start: { x: 200, y: -20 }, end: { x: 200, y: 220 }, gap: 20 });
+      check(cutPieces.length === 2 && cutPieces.every(piece => Math.abs(piece.width - 190) < .0001), 'Browser-local cutter returns exact geometry without a server request');
+      let cutCalls = 0, cutId = 0;
+      const localCut = ((frame, start, end, gap) => { cutCalls++; return cutFrame({ frame, start, end, gap }); }) satisfies CutExecutor;
+      const divided = await divideFrame(makeFrame('rect', 0, 0, 400, 200), 20, 'horizontal', 1, localCut, () => `browser-division-${++cutId}`);
+      check(divided.length === 20 && cutCalls === 19, 'Browser-local Division creates 20 parts with 19 local cuts');
       const source = document.createElement('canvas'); source.width = 1200; source.height = 800; const ctx = source.getContext('2d')!;
       const grad = ctx.createLinearGradient(0, 0, 1200, 800); grad.addColorStop(0, '#d6af85'); grad.addColorStop(.55, '#587967'); grad.addColorStop(1, '#233e37'); ctx.fillStyle = grad; ctx.fillRect(0, 0, 1200, 800);
       ctx.fillStyle = '#eed6ad'; ctx.beginPath(); ctx.arc(900, 200, 110, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#385845'; ctx.beginPath(); ctx.moveTo(0,800); ctx.lineTo(400,300); ctx.lineTo(780,800); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = '50px sans-serif'; ctx.fillText('LOCAL PHOTO · 3:2', 60, 100);

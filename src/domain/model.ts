@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { fontFamilySchema } from '../fonts/domain';
 
 const finite = z.number().finite();
 const measure = finite.min(0.01).max(14400);
@@ -44,12 +45,13 @@ const common = {
 };
 export const frameSchema = z.object({
   ...common, type: z.literal('frame'), geometry: geometrySchema, fill: color,
+  locked: z.boolean().default(false),
   borderEnabled: z.boolean().default(false), borderThickness: z.union([z.literal(FRAME_BORDER_THICKNESS_SMALL), z.literal(FRAME_BORDER_THICKNESS)]).default(FRAME_BORDER_THICKNESS), borderMargin: finite.min(0).max(FRAME_BORDER_MARGIN_MAX).default(0), borderColor: color.default('#000000'),
   photo: photoSchema.optional(), groupId: id.optional(), cutLink: cutLinkSchema.optional(), cutPath: z.array(cutLinkSchema).min(1).max(32).optional(),
 }).strict();
 export const textSchema = z.object({
   ...common, type: z.literal('text'), text: z.string().max(20000),
-  font: z.enum(['Inter', 'Lora', 'DM Sans']), fontSize: finite.min(4).max(1000),
+  font: fontFamilySchema, fontSize: finite.min(4).max(1000),
   bold: z.boolean(), italic: z.boolean(), color,
   align: z.enum(['left', 'center', 'right', 'justify']), lineHeight: finite.min(0.7).max(4),
   clip: z.array(pointSchema).min(3).max(256).optional(),
@@ -71,7 +73,7 @@ export const assetSchema = z.object({ id: z.string().regex(/^[0-9a-f]{64}$/), na
 export type PhotoAssetRef = z.infer<typeof assetSchema>;
 export const projectSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('album-project'), id,
-  name: z.string().min(1).max(120), unit: z.enum(['in', 'cm']), allowDuplicates: z.boolean(),
+  name: z.string().min(1).max(120), unit: z.enum(['in', 'cm']), allowDuplicates: z.boolean(), framesLocked: z.boolean().default(false),
   pages: z.array(pageSchema).min(1).max(200), assets: z.array(assetSchema).max(10000),
 }).strict();
 export type AlbumProject = z.infer<typeof projectSchema>;
@@ -92,10 +94,16 @@ export function makePage(source?: Page): Page {
   return { id: uid(), name: '', baseWidth: source?.baseWidth ?? 1296, height: source?.height ?? 864, mode: source?.mode ?? 'single', dpi: source?.dpi ?? 150, padding: source?.padding ?? 0, centerPaddingMode: source?.centerPaddingMode ?? 'none', clipContentToPadding: source?.clipContentToPadding ?? false, background: '#ffffff', elements: [] };
 }
 export function makeProject(): AlbumProject {
-  return { schemaVersion: 1, kind: 'album-project', id: uid(), name: 'Untitled album', unit: 'in', allowDuplicates: false, pages: [makePage()], assets: [] };
+  return { schemaVersion: 1, kind: 'album-project', id: uid(), name: 'Untitled album', unit: 'in', allowDuplicates: false, framesLocked: false, pages: [makePage()], assets: [] };
 }
 export function makeFrame(kind: 'rect' | 'ellipse', x: number, y: number, width: number, height: number): FrameElement {
-  return { id: uid(), type: 'frame', x, y, width, height, rotation: 0, fill: '#eeeae3', borderEnabled: false, borderThickness: FRAME_BORDER_THICKNESS, borderMargin: 0, borderColor: '#000000', geometry: { base: { kind, x: 0, y: 0, width, height }, clip: [{ x: 0, y: 0 }, { x: width, y: 0 }, { x: width, y: height }, { x: 0, y: height }] } };
+  return { id: uid(), type: 'frame', x, y, width, height, rotation: 0, fill: '#eeeae3', locked: false, borderEnabled: false, borderThickness: FRAME_BORDER_THICKNESS, borderMargin: 0, borderColor: '#000000', geometry: { base: { kind, x: 0, y: 0, width, height }, clip: [{ x: 0, y: 0 }, { x: width, y: 0 }, { x: width, y: height }, { x: 0, y: height }] } };
+}
+export function setPageFramesLocked(page: Page, locked: boolean): Page {
+  return { ...page, elements: page.elements.map(element => element.type === 'frame' ? { ...element, locked } : element) };
+}
+export function setProjectFramesLocked(project: AlbumProject, locked: boolean): AlbumProject {
+  return { ...project, framesLocked: locked, pages: project.pages.map(page => setPageFramesLocked(page, locked)) };
 }
 export function makeText(x: number, y: number, width: number): TextElement {
   return { id: uid(), type: 'text', x, y, width, height: 90, rotation: 0, text: 'A moment to remember', font: 'Lora', fontSize: 28, color: '#2b302e', bold: false, italic: false, align: 'left', lineHeight: 1.3 };
@@ -134,7 +142,7 @@ export function purgePhotoAssets(project: AlbumProject, assetIds: ReadonlySet<st
 }
 function withoutPhotos(page: Page): Page {
   const clean = structuredClone(page); delete clean.backgroundPhoto; delete clean.backgroundClip;
-  clean.elements.forEach(e => { if (e.type === 'frame') delete e.photo; });
+  clean.elements.forEach(e => { if (e.type === 'frame') { delete e.photo; e.locked = false; } });
   return clean;
 }
 export function asTemplate(page: Page, name: string): PageLayoutTemplate {

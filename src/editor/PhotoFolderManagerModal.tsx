@@ -48,6 +48,12 @@ export default function PhotoFolderManagerModal({ folders, busy, importingFolder
       })}
       {!folders.length && <div className="folder-manager-empty"><FolderOpen size={30}/><strong>No photo folders yet.</strong><span>Add a folder to begin. Your photos stay on this computer.</span></div>}
     </div>
-    <div className="folder-manager-footer"><span>{folders.length} managed folder{folders.length === 1 ? '' : 's'}</span><button className="primary" disabled={busy} onClick={onAdd}><Plus size={15}/> Add Folder</button></div>
+    <div className="folder-manager-footer">
+      <span>{folders.length} managed folder{folders.length === 1 ? '' : 's'}</span>
+      <div className="folder-manager-actions">
+        <button className="primary" disabled={busy} onClick={onAdd}><Plus size={15}/> Add Folder</button>
+        <button onClick={onClose}>Close</button>
+      </div>
+    </div>
   </Modal>;
 }

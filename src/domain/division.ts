@@ -1,11 +1,11 @@
-import { FrameElement, Point } from './model';
+import { FrameElement } from './model';
 import { localToPage, pageToLocal } from './geometry';
 import { linkCutPieces } from './cutLinks';
+import type { CutExecutor } from './cutter';
 
 export type DivisionDirection = 'horizontal' | 'vertical';
-type Cut = (frame: FrameElement, start: Point, end: Point, gap: number) => Promise<[FrameElement, FrameElement]>;
 
-export async function divideFrame(frame: FrameElement, count: number, direction: DivisionDirection, gap: number, cut: Cut, makeId: () => string): Promise<FrameElement[]> {
+export async function divideFrame(frame: FrameElement, count: number, direction: DivisionDirection, gap: number, cut: CutExecutor, makeId: () => string): Promise<FrameElement[]> {
   if (frame.photo) throw new Error('Division works on one empty frame at a time.');
   if (frame.geometry.paths) throw new Error('Union Shapes cannot be divided.');
   if (!Number.isInteger(count) || count < 2 || count > 20) throw new Error('Division count must be a whole number from 2 to 20.');

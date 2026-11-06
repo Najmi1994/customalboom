@@ -1,4 +1,4 @@
-import { AlbumProject, LayoutTemplate, projectSchema, templateSchema } from '../domain/model';
+import { AlbumProject, LayoutTemplate, projectSchema, setProjectFramesLocked, templateSchema } from '../domain/model';
 import { clipPageToSafeArea, validPage } from '../domain/geometry';
 
 let database: Promise<IDBDatabase> | undefined;
@@ -64,8 +64,13 @@ function checkProject(project: AlbumProject) {
   return project;
 }
 export function parseProject(raw: unknown) {
+  const legacyLockState = !!raw && typeof raw === 'object' && !Object.prototype.hasOwnProperty.call(raw, 'framesLocked');
   const project = projectSchema.parse(raw);
-  return checkProject({ ...project, pages: project.pages.map(page => page.clipContentToPadding ? clipPageToSafeArea(page) : page) });
+  const frames = project.pages.flatMap(page => page.elements.filter(element => element.type === 'frame'));
+  const framesLocked = legacyLockState ? frames.length > 0 && frames.every(frame => frame.locked) : project.framesLocked;
+  const synchronized = setProjectFramesLocked(project, framesLocked);
+  const pages = synchronized.pages.map(page => page.clipContentToPadding ? clipPageToSafeArea(page) : page);
+  return checkProject({ ...synchronized, pages });
 }
 export function parseTemplate(raw: unknown): LayoutTemplate {
   const parsed = templateSchema.parse(raw), pages = (parsed.kind === 'album-template' ? [parsed.page] : parsed.pages).map(page => page.clipContentToPadding ? clipPageToSafeArea(page) : page);

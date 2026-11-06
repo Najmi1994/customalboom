@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createSessionToken, hashPassword, verifyPassword, verifySessionToken } from "../src/print-shops/crypto";
-import { DEFAULT_SUPPORT_SETTINGS, malaysiaDate, normalizePhone, orderedShops, publicSupportSettings, shopInputSchema, shopStatus, styleStoreSchema, supportSettingsSchema, toPublicShop, whatsappUrl, type PrintShop } from "../src/print-shops/domain";
+import { DEFAULT_SUPPORT_SETTINGS, malaysiaDate, normalizePhone, orderedShops, passwordChangeSchema, publicSupportSettings, shopInputSchema, shopStatus, styleStoreSchema, supportSettingsSchema, toPublicShop, whatsappUrl, type PrintShop } from "../src/print-shops/domain";
+import { fontFamilySchema, googleFontsStylesheet, uniqueFontFamilies } from "../src/fonts/domain";
+
+test('coffee portrait is optional, survives settings and only accepts safe raster references', () => {
+  assert.equal(supportSettingsSchema.parse(DEFAULT_SUPPORT_SETTINGS).portrait, undefined);
+  const portrait = { id: '00000000-0000-4000-8000-000000000001', extension: 'webp' as const };
+  const settings = supportSettingsSchema.parse({ ...DEFAULT_SUPPORT_SETTINGS, portrait });
+  assert.deepEqual(publicSupportSettings(settings).portrait, portrait);
+  for (const invalid of [{ ...portrait, id: '../style.asp' }, { ...portrait, extension: 'svg' }, { ...portrait, key: '/secret' }]) {
+    assert.equal(supportSettingsSchema.safeParse({ ...DEFAULT_SUPPORT_SETTINGS, portrait: invalid }).success, false);
+  }
+  assert.equal(supportSettingsSchema.parse({ ...settings, portrait: undefined }).portrait, undefined);
+});
 
 function shop(overrides: Partial<PrintShop> = {}): PrintShop {
   return {
@@ -66,6 +78,22 @@ test("store accepts an optional global admin contact without breaking old data",
   assert.equal(styleStoreSchema.safeParse(base).success, true);
   assert.equal(styleStoreSchema.safeParse({ ...base, adminContactPhone: "0123456789" }).success, true);
   assert.equal(styleStoreSchema.parse(base).supportSettings.titleMs, DEFAULT_SUPPORT_SETTINGS.titleMs);
+  assert.deepEqual(styleStoreSchema.parse(base).googleFonts, []);
+});
+
+test("Google Font names are safe, deduplicated and encoded for the stylesheet", () => {
+  assert.equal(fontFamilySchema.safeParse("Playfair Display").success, true);
+  assert.equal(fontFamilySchema.safeParse("Font'; color:red").success, false);
+  assert.deepEqual(uniqueFontFamilies(["Lora", "lora", "Playfair Display"]), ["Lora", "Playfair Display"]);
+  const url = googleFontsStylesheet(["Playfair Display", "Noto Sans"]);
+  assert.match(url, /^https:\/\/fonts\.googleapis\.com\/css2\?/);
+  assert.equal(new URL(url).searchParams.getAll("family").join("|"), "Playfair Display|Noto Sans");
+});
+
+test("password changes require a distinct password of at least 12 characters", () => {
+  assert.equal(passwordChangeSchema.safeParse({ currentPassword: "old-password", newPassword: "short" }).success, false);
+  assert.equal(passwordChangeSchema.safeParse({ currentPassword: "same-password", newPassword: "same-password" }).success, false);
+  assert.equal(passwordChangeSchema.safeParse({ currentPassword: "old-password", newPassword: "a-long-new-password" }).success, true);
 });
 
 test("support settings allow only one copy value per bank and hide disabled accounts publicly", () => {

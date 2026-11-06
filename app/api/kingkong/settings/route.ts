@@ -37,7 +37,7 @@ export async function PATCH(request: Request) {
       ...snapshot.data,
       revision: snapshot.data.revision + 1,
       adminContactPhone: value,
-      supportSettings: parsed.data.supportSettings ?? snapshot.data.supportSettings,
+      supportSettings: parsed.data.supportSettings ? { ...parsed.data.supportSettings, portrait: snapshot.data.supportSettings.portrait } : snapshot.data.supportSettings,
     });
     return noStoreJson(payload(saved.data.revision, saved.data.supportSettings, saved.data.adminContactPhone));
   } catch (error) {
