@@ -57,7 +57,7 @@ Lock Frame in the workspace toolbar is an album-wide mode and does not require a
 
 Auto-fill prioritizes portrait, landscape and square photos for matching empty frames, then chooses the closest aspect ratio to reduce cropping. Matching photos are reserved before filling unmatched frames with leftovers. Selected photos are used at most once; otherwise enabling duplicate photos allows reuse, preferring less-used candidates. Existing filled frames and photo eligibility rules remain unchanged.
 
-The header reports browser autosave separately from the project-file status bar. The bar shows the last `.can` download request or completed `.canpack` save time (hover for its full date), and flags subsequent changes. A `.can` download cannot be confirmed on disk by the app, so check browser downloads. After 10 minutes of unsaved changes a non-blocking reminder offers Save project or another 10-minute snooze. Opening a project establishes a clean file baseline; undoing back to it clears the reminder. File status metadata persists locally alongside browser autosave and never includes photo bytes.
+The header reports browser autosave beneath the album name. Use File → Save project or Ctrl+S to download a small `.can`, and check browser downloads to confirm that the file was kept. File → Save project with photos writes a portable `.canpack` through the browser file picker.
 
 ## Source organization
 

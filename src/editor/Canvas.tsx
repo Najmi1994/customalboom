@@ -24,7 +24,8 @@ export default function Canvas({ photoDraft: cropDraft, onPhotoDraft: setCropDra
   const adjustedImage = useAdjustedPhotos(page, library, cropDraft, comparePhoto, notify);
   const [duplicateGhost, setDuplicateGhost] = useState<AlbumElement | null>(null), [contextMenu, setContextMenu] = useState<{ x: number; y: number; frameId: string } | null>(null), cropStart = useRef<{ point: Point; frame: FrameElement } | null>(null), panStart = useRef<Point | null>(null), halfCutGesture = useRef<{ start: Point; direction?: 'horizontal' | 'vertical' } | null>(null), elementDragStart = useRef<{ id: string; point: Point; members: AlbumElement[] } | null>(null), duplicateDrag = useRef<{ sources: AlbumElement[]; copyIds: string[]; groupId?: string } | null>(null);
   const fit = Math.min((size.width - (preview ? 160 : 112)) / pageWidth(page), (size.height - (preview ? 96 : 110)) / page.height), scale = Math.max(.01, fit * (preview ? 1 : zoom));
-  const ox = (size.width - pageWidth(page) * scale) / 2 + (preview ? 0 : pan.x), oy = (size.height - page.height * scale) / 2 + (preview ? 0 : pan.y);
+  const canvasLift = size.height <= 480 ? 12 : 20;
+  const ox = (size.width - pageWidth(page) * scale) / 2 + (preview ? 0 : pan.x), oy = (size.height - page.height * scale) / 2 + (preview ? 0 : pan.y - canvasLift);
   const hand = !preview && !cropId && (tool === 'hand' || space);
   useEffect(() => { const observer = new ResizeObserver(entries => { const r = entries[0].contentRect; setSize({ width: r.width, height: r.height }); }); if (wrap.current) observer.observe(wrap.current); return () => observer.disconnect(); }, []);
   useEffect(() => { if (!preview) { setPan({ x: 0, y: 0 }); setZoom(1); } setDuplicateGhost(null); setContextMenu(null); setSelectionBox(null); setDragRegion(null); halfCutGesture.current = null; duplicateDrag.current = null; }, [page.id, page.mode]);
@@ -88,7 +89,6 @@ export default function Canvas({ photoDraft: cropDraft, onPhotoDraft: setCropDra
     let node: Konva.Node | null = stage.current.getIntersection(stage.current.getPointerPosition()!); while (node && !page.elements.some(e => e.id === node!.id())) node = node.getParent();
     if (node) onDrop(asset, node.id()); else notify('Drop the photo onto a frame.');
   }}>
-    {!preview && <div className="canvas-caption"><span>{page.mode === 'spread' ? 'SPREAD' : 'SINGLE PAGE'}</span><span>{page.dpi} DPI</span></div>}
     <Stage ref={stage} width={size.width} height={size.height} listening={!preview}
       onWheel={preview ? undefined : e => { e.evt.preventDefault(); if (cropFrame?.photo) { const img = library.get(cropFrame.photo.assetId); if (img) cropZoom(Math.max(1, Math.min(5, cropFrame.photo.width / (img.ref.width * Math.max(cropFrame.width / img.ref.width, cropFrame.height / img.ref.height)) * (e.evt.deltaY > 0 ? .95 : 1.05)))); } else if (e.evt.ctrlKey || e.evt.metaKey) setZoom(z => Math.min(4, Math.max(.2, z * (e.evt.deltaY > 0 ? .9 : 1.1)))); else setPan(p => ({ x: p.x - e.evt.deltaX, y: p.y - e.evt.deltaY })); }}
       onMouseDown={preview ? undefined : e => {

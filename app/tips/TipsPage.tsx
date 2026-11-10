@@ -37,6 +37,14 @@ const copy = {
   },
 };
 
+const tipImages = [
+  '/tips/01-plan-before-event.jpg',
+  '/tips/02-leave-room-to-crop.jpg',
+  '/tips/03-finish-retouching.jpg',
+  '/tips/04-organise-chronologically.jpg',
+  '/tips/05-highlight-best-photo.jpg',
+];
+
 export default function TipsPage({ support }: { support: SupportSettings }) {
   const [language, setLanguage] = useState<'en' | 'ms'>('en');
   const [copied, setCopied] = useState(''), [copyError, setCopyError] = useState(false);
@@ -58,6 +66,7 @@ export default function TipsPage({ support }: { support: SupportSettings }) {
       <section className="info-section">
         <div className="info-section-heading"><span className="info-icon"><Camera/></span><h1>{t.title}</h1></div>
         <ol className="tips-list">{t.tips.map(([title, description], index) => <li key={index}>
+          <Image className="tips-image" src={tipImages[index]} alt="" width={1200} height={800} sizes="(max-width: 760px) calc(100vw - 72px), 280px" loading={index === 0 ? 'eager' : 'lazy'}/>
           <span className="tips-number" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
           <div><h2>{title}</h2><p>{description}</p>{index === 3 && <ol className="tips-folders" aria-label={title}>{t.folders.map((folder, i) => <li key={folder}>{i > 0 && <ArrowRight size={14} aria-hidden="true"/>}<span>{folder}</span></li>)}</ol>}</div>
         </li>)}</ol>
